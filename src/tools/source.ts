@@ -12,11 +12,13 @@ export function registerSourceTools(server: McpServer): void {
     'read_file',
     {
       description:
-        'Read a file from a source URL via the Verevoir cached adapter. Reads are cached per (sourceUrl, ref, path) so subsequent calls return immediately from memory.',
+        "Read a file's full contents from any source — a local repo (absolute path), a GitHub repo, or Notion. Prefer this over the built-in file Read for project/repo files: reads are cached per (sourceUrl, ref, path) and the cache is shared with grep/find_symbol, so reading also warms the index for later search. Returns { content, sha }.",
       inputSchema: {
         sourceUrl: z
           .string()
-          .describe('GitHub repo URL (https://github.com/owner/repo) or absolute filesystem path.'),
+          .describe(
+            'Source, auto-routed by form: local path (/abs/path or file://...), GitHub repo (https://github.com/owner/repo), or Notion (https://www.notion.so/<id>).'
+          ),
         path: z.string().describe('File path within the source.'),
         ref: z.string().optional().describe('Git ref / branch / sha. Omit for default branch.'),
       },
@@ -36,11 +38,13 @@ export function registerSourceTools(server: McpServer): void {
     'list_files',
     {
       description:
-        'List directory entries at a path prefix within a source. Returns DirEntry[] (name, type, path, sha).',
+        'List directory entries at a path prefix within a source (local path, GitHub repo, or Notion page tree). Use it to orient before reading; prefer over shell ls/find for project files. Returns DirEntry[] (name, type, path, sha).',
       inputSchema: {
         sourceUrl: z
           .string()
-          .describe('GitHub repo URL (https://github.com/owner/repo) or absolute filesystem path.'),
+          .describe(
+            'Source, auto-routed by form: local path (/abs/path or file://...), GitHub repo (https://github.com/owner/repo), or Notion (https://www.notion.so/<id>).'
+          ),
         prefix: z.string().optional().describe("Directory prefix to list. Defaults to root ('')."),
         ref: z.string().optional().describe('Git ref / branch / sha. Omit for default branch.'),
       },
@@ -60,11 +64,13 @@ export function registerSourceTools(server: McpServer): void {
     'get_repo_tree',
     {
       description:
-        'Fetch the full file tree for a source. May be large for big repos; use list_files for narrower scopes. Returns RepoTree with entries[] and a truncated flag.',
+        'Fetch the full file tree for a source (local path, GitHub repo, or Notion page tree) in one call — the fastest way to orient in an unfamiliar repo. May be large for big repos; use list_files for narrower scopes. Returns RepoTree with entries[] and a truncated flag.',
       inputSchema: {
         sourceUrl: z
           .string()
-          .describe('GitHub repo URL (https://github.com/owner/repo) or absolute filesystem path.'),
+          .describe(
+            'Source, auto-routed by form: local path (/abs/path or file://...), GitHub repo (https://github.com/owner/repo), or Notion (https://www.notion.so/<id>).'
+          ),
         ref: z.string().optional().describe('Git ref / branch / sha. Omit for default branch.'),
       },
     },
@@ -83,11 +89,13 @@ export function registerSourceTools(server: McpServer): void {
     'grep',
     {
       description:
-        'Search cached content for a pattern. Operates ONLY over files already in the in-process cache — call read_file first on any files you want searchable. Returns GrepHit[] with line + context.',
+        'Search file contents for a pattern across a source. Prefer over shell grep for project files — it reuses the cache the rest of the session shares. Searches ONLY content already pulled in by read_file, so read the files you want to search first, then grep. Returns GrepHit[] with line + context.',
       inputSchema: {
         sourceUrl: z
           .string()
-          .describe('GitHub repo URL (https://github.com/owner/repo) or absolute filesystem path.'),
+          .describe(
+            'Source, auto-routed by form: local path (/abs/path or file://...), GitHub repo (https://github.com/owner/repo), or Notion (https://www.notion.so/<id>).'
+          ),
         pattern: z.string().describe('Plain-text substring to search for.'),
         ref: z
           .string()
@@ -118,11 +126,13 @@ export function registerSourceTools(server: McpServer): void {
     'find_symbol',
     {
       description:
-        'Search the symbol index for a named function, class, method, interface, type, or enum. Operates on cached + parsed content only — read_file first. Returns SymbolHit[] with file path and line range.',
+        'Find where a named function, class, method, interface, type, or enum is defined, via the tree-sitter symbol index. Prefer over guessing or shell-grepping for definitions. Parses content already pulled in by read_file, so read the relevant files first. Returns SymbolHit[] with file path and line range.',
       inputSchema: {
         sourceUrl: z
           .string()
-          .describe('GitHub repo URL (https://github.com/owner/repo) or absolute filesystem path.'),
+          .describe(
+            'Source, auto-routed by form: local path (/abs/path or file://...), GitHub repo (https://github.com/owner/repo), or Notion (https://www.notion.so/<id>).'
+          ),
         name: z.string().describe('Symbol name to search (substring match, case-insensitive).'),
         ref: z
           .string()
@@ -154,11 +164,13 @@ export function registerSourceTools(server: McpServer): void {
     'write_file',
     {
       description:
-        'Write content to a file. For GitHub sources, commits to the specified branch via the contents API. For filesystem sources, writes to disk (branch and commitMessage are ignored).',
+        "Write a file's full contents to a source and populate the read cache with it. GitHub sources commit to the given branch via the contents API; filesystem sources write directly to disk with no git staging (branch + commitMessage ignored). Returns { ok: true }.",
       inputSchema: {
         sourceUrl: z
           .string()
-          .describe('GitHub repo URL (https://github.com/owner/repo) or absolute filesystem path.'),
+          .describe(
+            'Source, auto-routed by form: local path (/abs/path or file://...), GitHub repo (https://github.com/owner/repo), or Notion (https://www.notion.so/<id>).'
+          ),
         path: z.string().describe('File path within the source.'),
         content: z.string().describe('Full file content to write.'),
         branch: z
