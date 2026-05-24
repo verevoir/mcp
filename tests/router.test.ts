@@ -32,6 +32,14 @@ describe('pickSourceAdapter', () => {
     expect(typeof adapter.readFile).toBe('function');
   });
 
+  it('returns the notion adapter for a notion.so URL', async () => {
+    const adapter = await pickSourceAdapter(
+      'https://www.notion.so/myws/Root-aabbccdd11223344556677889900aabb'
+    );
+    expect(adapter).toBeDefined();
+    expect(typeof adapter.readFile).toBe('function');
+  });
+
   it('throws for an unsupported URL', async () => {
     await expect(pickSourceAdapter('https://gitlab.com/owner/repo')).rejects.toThrow(
       'Unsupported source URL'
@@ -56,10 +64,12 @@ describe('pickWorkflowAdapter', () => {
     expect(typeof adapter.listCards).toBe('function');
   });
 
-  it('throws for an unsupported board URL', async () => {
-    await expect(pickWorkflowAdapter('https://notion.so/board/xyz')).rejects.toThrow(
-      'Unsupported board URL'
+  it('returns the notion adapter for a notion.so database URL', async () => {
+    const adapter = await pickWorkflowAdapter(
+      'https://www.notion.so/myws/369772cdbf9f80ab8900e7b7a96c5422?v=abcdef'
     );
+    expect(adapter).toBeDefined();
+    expect(typeof adapter.listColumns).toBe('function');
   });
 
   it('throws for a Jira URL', async () => {
