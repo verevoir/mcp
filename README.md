@@ -1,24 +1,46 @@
 # @verevoir/mcp
 
-MCP server exposing the Verevoir substrate (cached file reads + tree-sitter symbol search + workflow operations) as tools usable from Claude Code and any other MCP-compatible client.
+MCP server exposing the Verevoir substrate as Claude-Code-usable tools. Cached file reads, tree-sitter symbol search, and kanban / issue / objective operations behind one stdio MCP process.
 
 ## Purpose
 
-Lets an LLM agent (or anyone driving Claude Code) work against multiple sources — GitHub repos, local filesystems, Trello boards — through one stable tool surface, with read-through caching and symbol-level navigation provided by `@verevoir/context`.
+Lets an LLM agent (or anyone driving Claude Code) work against multiple sources — GitHub repos, local filesystems, Trello boards — through one stable tool surface. Reads are cached via `@verevoir/context`; writes go through the underlying adapter and populate the cache so subsequent reads see the new content without a refetch.
 
-Sibling to [`@verevoir/sources`](https://github.com/verevoir/sources), [`@verevoir/context`](https://github.com/verevoir/context), and [`@verevoir/workflows`](https://github.com/verevoir/workflows). This package is the glue that exposes them all as MCP tools.
+Sibling to [`@verevoir/sources`](https://github.com/verevoir/sources), [`@verevoir/context`](https://github.com/verevoir/context), and [`@verevoir/workflows`](https://github.com/verevoir/workflows). This package wires them together as an MCP server.
+
+## Prerequisites
+
+- Node `>=20`.
+- One or more of:
+  - **GitHub PAT** — fine-grained, with `Contents: Read + Write` on whichever repos you want the tools to touch. Add `Pull requests: Read + Write` and `Workflows: Read + Write` if you'll expand the tool surface later.
+  - **Trello Power-Up** — created at https://trello.com/power-ups/admin. From the Power-Up's **API Key** tab, generate the API key + the user token (the "Token" hyperlink on the same page). Note the allowed-origin URL — the MCP server must send it as the `Referer` or Trello returns 401.
 
 ## Install
+
+### Option A — via npm (recommended for stable use)
 
 ```bash
 npm install -g @verevoir/mcp
 ```
 
-Or run via `npx @verevoir/mcp`.
+Or invoke via `npx` (no global install).
+
+### Option B — local path (recommended while iterating on the server)
+
+Clone, build, and point your MCP config at the local `dist/bin.js`. Skips the publish cycle on every server change.
+
+```bash
+git clone git@github.com:verevoir/mcp.git
+cd mcp
+npm install
+npm run build
+```
 
 ## Configuration in Claude Code
 
 Add to `~/.claude/mcp.json`:
+
+### Option A — npm
 
 ```json
 {
@@ -37,46 +59,75 @@ Add to `~/.claude/mcp.json`:
 }
 ```
 
-Restart Claude Code. The tools listed below become available.
+### Option B — local path
 
-Env vars are read per-tool — you only need the ones for the sources you actually use. GitHub tools work without Trello credentials and vice versa.
+```json
+{
+  "mcpServers": {
+    "verevoir": {
+      "command": "node",
+      "args": ["/absolute/path/to/mcp/dist/bin.js"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_...",
+        "TRELLO_API_KEY": "...",
+        "TRELLO_API_TOKEN": "...",
+        "TRELLO_REFERER": "https://your-power-up-origin"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Code (the MCP server loads at session start; `claude --resume` works too — it spawns a new process which re-reads `mcp.json`).
+
+Env vars are read per-tool: GitHub tools only need `GITHUB_TOKEN`; Trello tools only need the three `TRELLO_*` vars. The server starts regardless of which are set — missing-env errors surface at tool-call time with clear messages naming the variable.
+
+## Sanity check
+
+Once configured + restarted, ask Claude to call `list_columns` against your Trello board. You should get an array of columns back. If you see "TRELLO_API_KEY not set" or "Trello returned 401: invalid key", the auth env or the Power-Up referer mismatch is the cause.
 
 ## Tools
 
 ### Source tools (file-shape sources)
 
-All take a `sourceUrl` (either `https://github.com/owner/repo` or an absolute filesystem path like `/Users/me/proj`) and route to the appropriate cached adapter.
+All take a `sourceUrl` (`https://github.com/owner/repo` or absolute filesystem path) and route to the appropriate cached adapter.
 
-- **`read_file`** — `{ sourceUrl, path, ref? }` — cached read; subsequent calls for the same path serve from memory.
-- **`list_files`** — `{ sourceUrl, prefix?, ref? }` — directory listing.
-- **`get_repo_tree`** — `{ sourceUrl, ref? }` — full file tree.
-- **`grep`** — `{ sourceUrl, pattern, ref?, ignoreCase?, maxResults? }` — substring search across **cached** content only (call `read_file` first to populate).
-- **`find_symbol`** — `{ sourceUrl, name, ref?, kind? }` — tree-sitter symbol search across cached + parsed content.
-- **`write_file`** — `{ sourceUrl, path, content, branch, commitMessage }` — commits via the GitHub contents API; for FS, writes to disk.
+| Tool            | Args                                                     | Returns            |
+| --------------- | -------------------------------------------------------- | ------------------ |
+| `read_file`     | `{ sourceUrl, path, ref? }`                              | `{ content, sha }` |
+| `list_files`    | `{ sourceUrl, prefix?, ref? }`                           | `DirEntry[]`       |
+| `get_repo_tree` | `{ sourceUrl, ref? }`                                    | `RepoTree`         |
+| `grep`          | `{ sourceUrl, pattern, ref?, ignoreCase?, maxResults? }` | `GrepHit[]`        |
+| `find_symbol`   | `{ sourceUrl, name, ref?, kind? }`                       | `SymbolHit[]`      |
+| `write_file`    | `{ sourceUrl, path, content, branch, commitMessage }`    | `{ ok: true }`     |
+
+`grep` and `find_symbol` operate on **cached** content only — call `read_file` first on any files you want searchable. The cache is per-process, lazy-population.
 
 ### Workflow tools (kanban / issue / objective sources)
 
 All take a `boardUrl` (today: `https://trello.com/b/<id>`).
 
-- **`list_columns`** — `{ boardUrl }`
-- **`list_cards`** — `{ boardUrl, columnId?, assigneeId?, labelId?, parentId? }`
-- **`get_card`** — `{ boardUrl, cardId }`
-- **`create_card`** — `{ boardUrl, columnId, title, body?, labelIds?, dueDate? }`
-- **`update_card`** — `{ boardUrl, cardId, title?, body?, columnId?, labelIds?, dueDate? }`
-- **`move_card`** — `{ boardUrl, cardId, toColumnId }`
-- **`list_comments`** — `{ boardUrl, cardId }`
-- **`add_comment`** — `{ boardUrl, cardId, body }`
+| Tool            | Args                                                                  | Returns        |
+| --------------- | --------------------------------------------------------------------- | -------------- |
+| `list_columns`  | `{ boardUrl }`                                                        | `Column[]`     |
+| `list_cards`    | `{ boardUrl, columnId?, assigneeId?, labelId?, parentId? }`           | `Card[]`       |
+| `get_card`      | `{ boardUrl, cardId }`                                                | `Card`         |
+| `create_card`   | `{ boardUrl, columnId, title, body?, labelIds?, dueDate? }`           | `Card`         |
+| `update_card`   | `{ boardUrl, cardId, title?, body?, columnId?, labelIds?, dueDate? }` | `{ ok: true }` |
+| `move_card`     | `{ boardUrl, cardId, toColumnId }`                                    | `{ ok: true }` |
+| `list_comments` | `{ boardUrl, cardId }`                                                | `Comment[]`    |
+| `add_comment`   | `{ boardUrl, cardId, body }`                                          | `{ ok: true }` |
 
 ## What this is NOT
 
-- Not a sync engine. Each tool is a single operation; cross-backend mirroring lives elsewhere.
-- Not a code editor. Reads + writes go through adapters; no in-memory text editing primitives.
-- Not opinionated about which board or repo you point at. URL routing decides the backend; the protocol is uniform.
+- Not a sync engine. Each tool is one operation; cross-backend mirroring lives elsewhere.
+- Not a code editor. Reads + writes pass through adapters; no in-memory text editing primitives.
+- Not opinionated about backends. URL routing picks the implementation; the protocol stays uniform.
 
 ## See also
 
 - [`@verevoir/sources`](https://github.com/verevoir/sources) — file-source contracts + GitHub + FS adapters.
-- [`@verevoir/context`](https://github.com/verevoir/context) — content + symbol cache, cached drop-in subpaths.
+- [`@verevoir/context`](https://github.com/verevoir/context) — content + symbol cache; cached drop-in subpaths.
 - [`@verevoir/workflows`](https://github.com/verevoir/workflows) — workflow-source contracts + Trello adapter.
 - [`@verevoir/llm`](https://github.com/verevoir/llm) — provider-agnostic LLM call surface.
 

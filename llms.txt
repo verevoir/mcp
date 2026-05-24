@@ -1,0 +1,100 @@
+# @verevoir/mcp
+
+MCP server exposing the Verevoir substrate (cached file reads + tree-sitter symbol search + workflow operations) as Claude-Code-usable tools.
+
+## Purpose
+
+Lets an LLM agent work against GitHub repos, local filesystems, and Trello boards through one stable tool surface. Reads are cached via `@verevoir/context`; writes pass through and populate the cache. Stdio transport.
+
+Sibling to `@verevoir/sources` (file-source contracts), `@verevoir/context` (cache), `@verevoir/workflows` (workflow-source contracts). This package wires them together.
+
+## Prerequisites
+
+- Node `>=20`.
+- `GITHUB_TOKEN` — fine-grained PAT with `Contents: Read + Write` on target repos. Only required for GitHub URLs.
+- `TRELLO_API_KEY` + `TRELLO_API_TOKEN` + `TRELLO_REFERER` — from a personal Trello Power-Up at https://trello.com/power-ups/admin. The Power-Up's allowed origin MUST match `TRELLO_REFERER` or Trello returns 401 "invalid key". Only required for Trello URLs.
+
+## Install
+
+```bash
+npm install -g @verevoir/mcp     # or run via `npx -y @verevoir/mcp`
+```
+
+For local-path use during iteration: `git clone`, `npm install`, `npm run build`, then point the MCP config at `dist/bin.js`.
+
+## Claude Code configuration
+
+`~/.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "verevoir": {
+      "command": "npx",
+      "args": ["-y", "@verevoir/mcp"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_...",
+        "TRELLO_API_KEY": "...",
+        "TRELLO_API_TOKEN": "...",
+        "TRELLO_REFERER": "https://your-power-up-origin"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Code (or `claude --resume`). Tools become ambient.
+
+Env vars are read per-tool. Tools work without their unrelated creds; missing-env errors surface at call time with the missing variable named.
+
+## Tools
+
+### Source tools (file-shape sources)
+
+URL routing: `https://github.com/owner/repo` → cached GitHub adapter; absolute path or `file://...` → cached FS adapter; anything else → unsupported error.
+
+```ts
+read_file({ sourceUrl, path, ref? })                            → { content, sha }
+list_files({ sourceUrl, prefix?, ref? })                        → DirEntry[]
+get_repo_tree({ sourceUrl, ref? })                              → RepoTree
+grep({ sourceUrl, pattern, ref?, ignoreCase?, maxResults? })    → GrepHit[]   // cache-only; read_file first
+find_symbol({ sourceUrl, name, ref?, kind? })                   → SymbolHit[]  // cache-only; read_file first
+write_file({ sourceUrl, path, content, branch, commitMessage }) → { ok: true }
+```
+
+`grep` and `find_symbol` operate on the in-process cache only — populate by calling `read_file` first.
+
+### Workflow tools (kanban / issue / objective sources)
+
+URL routing: `https://trello.com/b/<id>` → Trello adapter today; other backends as adapters are added.
+
+```ts
+list_columns({ boardUrl })                                                              → Column[]
+list_cards({ boardUrl, columnId?, assigneeId?, labelId?, parentId? })                   → Card[]
+get_card({ boardUrl, cardId })                                                          → Card
+create_card({ boardUrl, columnId, title, body?, labelIds?, dueDate? })                  → Card
+update_card({ boardUrl, cardId, title?, body?, columnId?, labelIds?, dueDate? })        → { ok: true }
+move_card({ boardUrl, cardId, toColumnId })                                             → { ok: true }
+list_comments({ boardUrl, cardId })                                                     → Comment[]
+add_comment({ boardUrl, cardId, body })                                                 → { ok: true }
+```
+
+## Caching semantics
+
+`read_file` returns from cache on the second call for the same `(sourceUrl, ref, path)`. `write_file` populates the cache with the just-written content. Symbol extraction (`find_symbol`) parses on-demand from cached content. `grep` scans cached content only — never fetches.
+
+Per-process state. New MCP process = empty cache. Workflow tools do not cache today.
+
+## Errors
+
+`SourceApiError` / `WorkflowApiError` map to MCP tool errors with status codes. 404 = missing resource. 401 = auth (check env vars + Trello Power-Up referer). 501 = operation not supported by the backend (e.g., `write_file` against an FS path that ignores branch/commit args; Trello `parentId` patches).
+
+## What this is NOT
+
+- Not a sync engine.
+- Not a code editor.
+- Not opinionated about backends — URL routing picks the implementation.
+
+## License
+
+Apache-2.0.
