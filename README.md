@@ -48,6 +48,7 @@ Add to `~/.claude/mcp.json`:
     "verevoir": {
       "command": "npx",
       "args": ["-y", "@verevoir/mcp"],
+      "alwaysLoad": true,
       "env": {
         "GITHUB_TOKEN": "ghp_...",
         "TRELLO_API_KEY": "...",
@@ -67,6 +68,7 @@ Add to `~/.claude/mcp.json`:
     "verevoir": {
       "command": "node",
       "args": ["/absolute/path/to/mcp/dist/bin.js"],
+      "alwaysLoad": true,
       "env": {
         "GITHUB_TOKEN": "ghp_...",
         "TRELLO_API_KEY": "...",
@@ -79,6 +81,10 @@ Add to `~/.claude/mcp.json`:
 ```
 
 Restart Claude Code (the MCP server loads at session start; `claude --resume` works too — it spawns a new process which re-reads `mcp.json`).
+
+#### Why `"alwaysLoad": true`
+
+Without this flag, Claude Code auto-defers MCP tool schemas when total tool definitions exceed ~10% of the context window — only tool *names* are sent up front; the model must call `ToolSearch` to load each schema before using it. That extra step makes the verevoir tools lose against always-on shell reflex (`grep`, `cat`, `find`) at the moment of choosing a tool — defeating the cache + freshness benefits of the MCP layer. `alwaysLoad: true` (Claude Code v2.1.121+) forces every tool from this server into the session at startup, so `read_file` / `grep` / `find_symbol` / `list_cards` are reflex-reachable. Older Claude Code versions ignore the flag (no breakage). The cost is ~2–5KB of context — worth it.
 
 Env vars are read per-tool: GitHub tools only need `GITHUB_TOKEN`; Trello tools only need the three `TRELLO_*` vars. The server starts regardless of which are set — missing-env errors surface at tool-call time with clear messages naming the variable.
 

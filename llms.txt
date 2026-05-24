@@ -32,6 +32,7 @@ For local-path use during iteration: `git clone`, `npm install`, `npm run build`
     "verevoir": {
       "command": "npx",
       "args": ["-y", "@verevoir/mcp"],
+      "alwaysLoad": true,
       "env": {
         "GITHUB_TOKEN": "ghp_...",
         "TRELLO_API_KEY": "...",
@@ -44,6 +45,8 @@ For local-path use during iteration: `git clone`, `npm install`, `npm run build`
 ```
 
 Restart Claude Code (or `claude --resume`). Tools become ambient.
+
+`alwaysLoad: true` (Claude Code v2.1.121+) forces all tools into the session at startup instead of being deferred behind `ToolSearch`. Without it the verevoir tools lose at reflex against always-on shell tools like `grep` / `cat`, defeating the cache + freshness layer this MCP exists to provide. Older Claude Code versions ignore the flag.
 
 Env vars are read per-tool. Tools work without their unrelated creds; missing-env errors surface at call time with the missing variable named.
 
