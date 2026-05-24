@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 — 2026-05-24
+
+- Docs: README + llms.txt recommend `"alwaysLoad": true` on the verevoir entry in Claude Code config (v2.1.121+). Without it, schemas are deferred behind `ToolSearch` and lose at reflex against always-on shell tools, defeating the cache + freshness layer.
+
 ## 0.1.0 — 2026-05-24
 
 Initial release.
