@@ -13,6 +13,7 @@ Sibling to `@verevoir/sources` (file-source contracts), `@verevoir/context` (cac
 - Node `>=20`.
 - `GITHUB_TOKEN` — fine-grained PAT with `Contents: Read + Write` on target repos. Only required for GitHub URLs.
 - `TRELLO_API_KEY` + `TRELLO_API_TOKEN` + `TRELLO_REFERER` — from a personal Trello Power-Up at https://trello.com/power-ups/admin. The Power-Up's allowed origin MUST match `TRELLO_REFERER` or Trello returns 401 "invalid key". Only required for Trello URLs.
+- `NOTION_API_KEY` — Notion integration token (`ntn_...`) from https://www.notion.so/profile/integrations. Share the pages / databases the integration should reach via Notion's Connections UI. Required for both Notion source and Notion workflow URLs.
 
 ## Install
 
@@ -37,7 +38,8 @@ For local-path use during iteration: `git clone`, `npm install`, `npm run build`
         "GITHUB_TOKEN": "ghp_...",
         "TRELLO_API_KEY": "...",
         "TRELLO_API_TOKEN": "...",
-        "TRELLO_REFERER": "https://your-power-up-origin"
+        "TRELLO_REFERER": "https://your-power-up-origin",
+        "NOTION_API_KEY": "ntn_..."
       }
     }
   }
@@ -54,7 +56,7 @@ Env vars are read per-tool. Tools work without their unrelated creds; missing-en
 
 ### Source tools (file-shape sources)
 
-URL routing: `https://github.com/owner/repo` → cached GitHub adapter; absolute path or `file://...` → cached FS adapter; anything else → unsupported error.
+URL routing: `https://github.com/owner/repo` → cached GitHub adapter; `https://www.notion.so/<page-id>` (or any notion.so URL form) → cached Notion adapter (page tree as file tree, blocks ↔ Markdown round-trip); absolute path or `file://...` → cached FS adapter; anything else → unsupported error.
 
 ```ts
 read_file({ sourceUrl, path, ref? })                            → { content, sha }
@@ -69,7 +71,7 @@ write_file({ sourceUrl, path, content, branch, commitMessage }) → { ok: true }
 
 ### Workflow tools (kanban / issue / objective sources)
 
-URL routing: `https://trello.com/b/<id>` → Trello adapter today; other backends as adapters are added.
+URL routing: `https://trello.com/b/<id>` → Trello adapter; `https://www.notion.so/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter (auto-detects status / title / people / multi_select property mapping); other backends as adapters are added.
 
 ```ts
 list_columns({ boardUrl })                                                              → Column[]

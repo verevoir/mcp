@@ -4,7 +4,7 @@ MCP server exposing the Verevoir substrate as Claude-Code-usable tools. Cached f
 
 ## Purpose
 
-Lets an LLM agent (or anyone driving Claude Code) work against multiple sources — GitHub repos, local filesystems, Trello boards — through one stable tool surface. Reads are cached via `@verevoir/context`; writes go through the underlying adapter and populate the cache so subsequent reads see the new content without a refetch.
+Lets an LLM agent (or anyone driving Claude Code) work against multiple sources — GitHub repos, local filesystems, Notion workspaces, Trello boards — through one stable tool surface. Reads are cached via `@verevoir/context`; writes go through the underlying adapter and populate the cache so subsequent reads see the new content without a refetch.
 
 Sibling to [`@verevoir/sources`](https://github.com/verevoir/sources), [`@verevoir/context`](https://github.com/verevoir/context), and [`@verevoir/workflows`](https://github.com/verevoir/workflows). This package wires them together as an MCP server.
 
@@ -14,6 +14,7 @@ Sibling to [`@verevoir/sources`](https://github.com/verevoir/sources), [`@verevo
 - One or more of:
   - **GitHub PAT** — fine-grained, with `Contents: Read + Write` on whichever repos you want the tools to touch. Add `Pull requests: Read + Write` and `Workflows: Read + Write` if you'll expand the tool surface later.
   - **Trello Power-Up** — created at https://trello.com/power-ups/admin. From the Power-Up's **API Key** tab, generate the API key + the user token (the "Token" hyperlink on the same page). Note the allowed-origin URL — the MCP server must send it as the `Referer` or Trello returns 401.
+  - **Notion integration** — create one at https://www.notion.so/profile/integrations, then share the relevant pages / databases with the integration from Notion's "Connections" UI. The integration token (`ntn_…`) is what you set as `NOTION_API_KEY`.
 
 ## Install
 
@@ -53,7 +54,8 @@ Add to `~/.claude/mcp.json`:
         "GITHUB_TOKEN": "ghp_...",
         "TRELLO_API_KEY": "...",
         "TRELLO_API_TOKEN": "...",
-        "TRELLO_REFERER": "https://your-power-up-origin"
+        "TRELLO_REFERER": "https://your-power-up-origin",
+        "NOTION_API_KEY": "ntn_..."
       }
     }
   }
@@ -73,7 +75,8 @@ Add to `~/.claude/mcp.json`:
         "GITHUB_TOKEN": "ghp_...",
         "TRELLO_API_KEY": "...",
         "TRELLO_API_TOKEN": "...",
-        "TRELLO_REFERER": "https://your-power-up-origin"
+        "TRELLO_REFERER": "https://your-power-up-origin",
+        "NOTION_API_KEY": "ntn_..."
       }
     }
   }
@@ -86,7 +89,7 @@ Restart Claude Code (the MCP server loads at session start; `claude --resume` wo
 
 Without this flag, Claude Code auto-defers MCP tool schemas when total tool definitions exceed ~10% of the context window — only tool _names_ are sent up front; the model must call `ToolSearch` to load each schema before using it. That extra step makes the verevoir tools lose against always-on shell reflex (`grep`, `cat`, `find`) at the moment of choosing a tool — defeating the cache + freshness benefits of the MCP layer. `alwaysLoad: true` (Claude Code v2.1.121+) forces every tool from this server into the session at startup, so `read_file` / `grep` / `find_symbol` / `list_cards` are reflex-reachable. Older Claude Code versions ignore the flag (no breakage). The cost is ~2–5KB of context — worth it.
 
-Env vars are read per-tool: GitHub tools only need `GITHUB_TOKEN`; Trello tools only need the three `TRELLO_*` vars. The server starts regardless of which are set — missing-env errors surface at tool-call time with clear messages naming the variable.
+Env vars are read per-tool: GitHub tools only need `GITHUB_TOKEN`; Trello tools only need the three `TRELLO_*` vars; Notion tools (both source and workflow) only need `NOTION_API_KEY`. The server starts regardless of which are set — missing-env errors surface at tool-call time with clear messages naming the variable.
 
 ## Sanity check
 
@@ -96,7 +99,11 @@ Once configured + restarted, ask Claude to call `list_columns` against your Trel
 
 ### Source tools (file-shape sources)
 
-All take a `sourceUrl` (`https://github.com/owner/repo` or absolute filesystem path) and route to the appropriate cached adapter.
+All take a `sourceUrl` and route to the appropriate cached adapter:
+
+- `https://github.com/owner/repo` → cached GitHub adapter.
+- `https://www.notion.so/<workspace>/<page-id>` (or any notion.so URL form) → cached Notion adapter. Pages become "files"; child pages become "subdirectories"; reads/writes traverse `path` through the page tree.
+- Absolute filesystem path (or `file://...`) → cached FS adapter.
 
 | Tool            | Args                                                     | Returns            |
 | --------------- | -------------------------------------------------------- | ------------------ |
@@ -111,7 +118,10 @@ All take a `sourceUrl` (`https://github.com/owner/repo` or absolute filesystem p
 
 ### Workflow tools (kanban / issue / objective sources)
 
-All take a `boardUrl` (today: `https://trello.com/b/<id>`).
+All take a `boardUrl`:
+
+- `https://trello.com/b/<id>` → Trello adapter.
+- `https://www.notion.so/<workspace>/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter. Rows become `Card`s; auto-detects which property is the status / column from the database schema.
 
 | Tool            | Args                                                                  | Returns        |
 | --------------- | --------------------------------------------------------------------- | -------------- |
