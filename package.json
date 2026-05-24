@@ -1,0 +1,55 @@
+{
+  "name": "@verevoir/mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing the Verevoir substrate (cached reads via @verevoir/context + workflow operations via @verevoir/workflows) as tools usable from Claude Code and any other MCP-compatible client.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "verevoir-mcp": "./dist/bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "prettier --check .",
+    "format": "prettier --write .",
+    "start": "node dist/bin.js",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@verevoir/context": "^0.2.0",
+    "@verevoir/sources": "^0.2.0",
+    "@verevoir/workflows": "^0.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "prettier": "^3",
+    "typescript": "^5",
+    "vitest": "^4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/verevoir/mcp.git"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
