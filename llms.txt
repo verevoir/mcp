@@ -52,6 +52,8 @@ Restart Claude Code (or `claude --resume`). Tools become ambient.
 
 Env vars are read per-tool. Tools work without their unrelated creds; missing-env errors surface at call time with the missing variable named.
 
+The server composes an operating doctrine into the model's context on connect. If it finds a project pointer manifest — `aigency.json` in its working directory, or `--manifest <path>` in `args` (ADR 023) — it appends a project-specific section naming this project's board / record / ADRs as Notion URLs. No manifest → no-project mode: universal doctrine only, server still starts.
+
 ## Tools
 
 ### Source tools (file-shape sources)

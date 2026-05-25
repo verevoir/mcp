@@ -85,6 +85,18 @@ Add to `~/.claude/mcp.json`:
 
 Restart Claude Code (the MCP server loads at session start; `claude --resume` works too — it spawns a new process which re-reads `mcp.json`).
 
+#### Pointing the server at a project (`aigency.json`)
+
+The server injects an operating doctrine into the model's context on connect. When it can find a project **pointer manifest** (`aigency.json`, per ADR 023), it appends a project-specific section naming _this_ project's work tracker, project record, and ADR database as concrete Notion URLs.
+
+Discovery (per ADR 023): the server reads `aigency.json` from its **working directory**, overridable with a `--manifest <path>` arg. Add it after the script path:
+
+```json
+"args": ["/absolute/path/to/mcp/dist/bin.js", "--manifest", "/absolute/path/to/project/aigency.json"]
+```
+
+Without a manifest the server runs in **no-project mode** — it still starts and serves the universal doctrine; only the project-specific section is omitted.
+
 #### Why `"alwaysLoad": true`
 
 Without this flag, Claude Code auto-defers MCP tool schemas when total tool definitions exceed ~10% of the context window — only tool _names_ are sent up front; the model must call `ToolSearch` to load each schema before using it. That extra step makes the verevoir tools lose against always-on shell reflex (`grep`, `cat`, `find`) at the moment of choosing a tool — defeating the cache + freshness benefits of the MCP layer. `alwaysLoad: true` (Claude Code v2.1.121+) forces every tool from this server into the session at startup, so `read_file` / `grep` / `find_symbol` / `list_cards` are reflex-reachable. Older Claude Code versions ignore the flag (no breakage). The cost is ~2–5KB of context — worth it.

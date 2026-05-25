@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerSourceTools } from './tools/source.js';
 import { registerWorkflowTools } from './tools/workflow.js';
 import { loadInstructions } from './instructions.js';
+import { loadManifest, composeInstructions } from './manifest.js';
 
 /** Construct and configure the MCP server. The caller is responsible for
  * wiring a transport (see bin.ts). */
@@ -13,9 +14,11 @@ export function createServer(): McpServer {
     },
     // Server-level guidance the client injects into the model's context on
     // connect — the lever that makes an agent prefer these tools over its
-    // built-in filesystem/shell tools. Loaded from the packaged doctrine doc
-    // (instructions.md) so it's editable as a doc, not a buried string literal.
-    { instructions: loadInstructions() }
+    // built-in filesystem/shell tools. The universal doctrine is loaded from
+    // the packaged doc (instructions.md); the project pointer manifest
+    // (aigency.json, per ADR 023) composes a project-specific layer on top
+    // naming this project's board + record. No manifest → universal only.
+    { instructions: composeInstructions(loadInstructions(), loadManifest()) }
   );
 
   registerSourceTools(server);

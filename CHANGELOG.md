@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.5 — 2026-05-25
+
+**Project doctrine composed from the manifest** (STDIO-85 v1, part 1). The server now reads the project pointer manifest (`aigency.json`, per ADR 023) at startup and composes a project-specific **## This project** section onto the universal doctrine — naming _this_ project's work tracker, project record, and ADR database as concrete Notion URLs, so the "read the board / put work on the board" steer resolves to real destinations instead of staying abstract.
+
+- Manifest discovery follows ADR 023: `aigency.json` in the server's working directory, overridable with `--manifest <path>`. No manifest (or an unreadable / invalid one) → **no-project mode**: the server still starts with the universal doctrine only.
+- `loadManifest` / `renderProjectDoctrine` / `composeInstructions` are pure and unit-tested; `createServer` wires them onto `loadInstructions()`.
+
+Deferred to follow-ups: surfacing the work-tracker **id prefix** in the doctrine (needs a manifest-schema field or a Notion read), and fetching a designated Notion onboarding page at startup to inject verbatim (STDIO-85 v1, part 2 — startup network).
+
 ## 0.3.4 — 2026-05-25
 
 **The board is the project's state** (STDIO-88 — second finding from the STDIO-86 cold runs). A cold sibling, given the full doctrine, still answered "what's your state?" from `git status` and declared "no work in flight." The doctrine said where work _lives_ and where to _put_ it, but never that the board is the answer to _reading_ state. Reworks the project-state section to lead with: read the work tracker first for state / in-progress / next; the local git tree + open PRs are the operational shell, not the project's state.
