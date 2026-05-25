@@ -1,7 +1,7 @@
 {
   "name": "@verevoir/mcp",
   "version": "0.3.4",
-  "description": "MCP server exposing the Verevoir substrate (cached reads via @verevoir/context + workflow operations via @verevoir/workflows) as tools usable from Claude Code and any other MCP-compatible client.",
+  "description": "MCP server exposing the Verevoir foundation (cached reads via @verevoir/context + workflow operations via @verevoir/workflows) as tools usable from Claude Code and any other MCP-compatible client.",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {

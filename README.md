@@ -1,6 +1,6 @@
 # @verevoir/mcp
 
-MCP server exposing the Verevoir substrate as Claude-Code-usable tools. Cached file reads, tree-sitter symbol search, and kanban / issue / objective operations behind one stdio MCP process.
+MCP server exposing the Verevoir foundation as Claude-Code-usable tools. Cached file reads, tree-sitter symbol search, and kanban / issue / objective operations behind one stdio MCP process.
 
 ## Purpose
 
