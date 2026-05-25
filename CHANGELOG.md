@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.4 — 2026-05-25
+
+**The board is the project's state** (STDIO-88 — second finding from the STDIO-86 cold runs). A cold sibling, given the full doctrine, still answered "what's your state?" from `git status` and declared "no work in flight." The doctrine said where work _lives_ and where to _put_ it, but never that the board is the answer to _reading_ state. Reworks the project-state section to lead with: read the work tracker first for state / in-progress / next; the local git tree + open PRs are the operational shell, not the project's state.
+
 ## 0.3.3 — 2026-05-25
 
 **Working-discipline doctrine** (STDIO-87 — first finding from the STDIO-86 cold run). Adds a "Working discipline" section to `instructions.md`: trace work to the tracker (carry the item id through branch / commit / PR title), and keep changes single-purpose with stated verification. Generic by design — the project-specific prefix value and any house PR norms compose from the manifest in STDIO-85 v1.
