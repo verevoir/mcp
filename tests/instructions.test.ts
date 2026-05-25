@@ -7,7 +7,7 @@ describe('loadInstructions', () => {
     // It must carry the core front-door steer and the work-on-the-board
     // directive — the reasons the doc is worth shipping into context at all.
     expect(text).toContain('front door');
-    expect(text).toContain('work tracker is the board');
+    expect(text.toLowerCase()).toContain('work tracker');
     expect(text.length).toBeGreaterThan(200);
   });
 

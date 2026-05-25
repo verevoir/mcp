@@ -16,10 +16,11 @@ Reads are cached and tree-sitter symbol-indexed via `@verevoir/context` and shar
 
 `get_repo_tree` or `list_files` to orient → `read_file` to pull content (this warms the cache) → `grep` / `find_symbol` for instant structural search. `grep` and `find_symbol` see only content already pulled by `read_file`, so read first.
 
-## Project context and work tracking live in the tools, not the local tree
+## Project state lives in the tools, not the local git tree
 
-- **Project record** — ADRs, intent, and other durable context live in Notion. Reach them via the Notion source tools and the workflow tools (`list_cards` / `get_card` / `list_columns`), not by grepping local files.
-- **The work tracker is the board.** Anything work-shaped — a thing to do, a gap, a bug, a deferred decision — is a card (`create_card` / `update_card` / `move_card`), not a note kept off to the side. If you catch yourself stashing a to-do somewhere else, make it a card instead.
+- **The board is the project's current state.** Asked what's going on — the state, what's in progress, what's next, what's left — read the work tracker first (`list_columns` / `list_cards`). The local git tree and open PRs are the operational shell, **not** the project's state: a clean working tree does not mean there is no work in flight.
+- **The board is also where work goes.** Anything work-shaped — a to-do, a gap, a bug, a deferred decision — is a card (`create_card` / `update_card` / `move_card`), not a note kept off to the side.
+- **Project record** — ADRs, intent, and other durable context live in Notion; reach them via the Notion source tools, not by grepping local files.
 
 ## Fix the source, not the leaf
 
