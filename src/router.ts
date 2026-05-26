@@ -3,6 +3,7 @@ import type { WorkflowAdapter, WorkflowEnv } from '@verevoir/workflows';
 import { envFromProcessEnv } from '@verevoir/sources';
 import { envFromTrelloProcessEnv } from '@verevoir/workflows/trello';
 import { envFromNotionProcessEnv } from '@verevoir/workflows/notion';
+import { wrapWorkflowWithCache } from '@verevoir/context';
 
 // ---------------------------------------------------------------------------
 // Source adapter routing
@@ -66,15 +67,20 @@ export function resolveSourceEnv(sourceUrl: string): {
 // Workflow adapter routing
 // ---------------------------------------------------------------------------
 
-/** Dynamically import and return the WorkflowAdapter for the given board URL. */
+/** Dynamically import and return the **cached** WorkflowAdapter for the given
+ * board URL. `wrapWorkflowWithCache` (default ~10s TTL, shared in-process
+ * store) gives the list/get reads read-through caching with cheap
+ * `isCardFresh` revalidation — the workflow twin of the cached source
+ * subpaths. Collapses correlated re-reads within a process; writes pass
+ * through and invalidate. */
 export async function pickWorkflowAdapter(boardUrl: string): Promise<WorkflowAdapter> {
   if (/^https:\/\/trello\.com\/b\/[^/]+/.test(boardUrl)) {
     const { trello } = await import('@verevoir/workflows/trello');
-    return trello;
+    return wrapWorkflowWithCache(trello);
   }
   if (/^https?:\/\/(www\.)?notion\.so\//.test(boardUrl)) {
     const { notion } = await import('@verevoir/workflows/notion');
-    return notion;
+    return wrapWorkflowWithCache(notion);
   }
   // Future: Jira, Linear adapters would slot in here.
   throw new Error(
