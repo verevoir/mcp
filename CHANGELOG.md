@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0 — 2026-05-26
+
+**`list_cards` omits bodies by default** (STDIO-93). The tool gains `includeBody` (default **false**) and `limit`. Large boards / long-bodied DBs (e.g. an ADR database) previously returned every card's full Markdown body in one response and could overflow the model's tool-result budget; now list views are lean by default — read a single body with `get_card`, or pass `includeBody: true` when you really want them all. Bumps `@verevoir/workflows` to `^0.4.0` (which carries the `includeBody`/`limit` `CardFilter` options).
+
 ## 0.4.0 — 2026-05-26
 
 **`grep` + `find_symbol` go cold** (STDIO-83). The tools no longer search only what `read_file` has already pulled in — they scan the **whole source on demand**, warming the shared cache as they go:

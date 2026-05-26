@@ -35,7 +35,7 @@ export function registerWorkflowTools(server: McpServer): void {
     'list_cards',
     {
       description:
-        "List cards/rows on a kanban board or Notion work-tracker database, with optional filters by column, assignee, label, or parent card. This is how you read the project's work tracker — prefer it over hunting for a task list in local files. Returns Card[].",
+        "List cards/rows on a kanban board or Notion work-tracker database, with optional filters by column, assignee, label, or parent card. This is how you read the project's work tracker — prefer it over hunting for a task list in local files. By default card **bodies are omitted** (keeps the payload small — large boards can otherwise overflow); pass includeBody:true for bodies, or read one card's body with get_card. Returns Card[].",
       inputSchema: {
         boardUrl: z
           .string()
@@ -46,12 +46,29 @@ export function registerWorkflowTools(server: McpServer): void {
         assigneeId: z.string().optional().describe('Restrict to cards assigned to this user.'),
         labelId: z.string().optional().describe('Restrict to cards carrying this label.'),
         parentId: z.string().optional().describe('Restrict to direct children of this card.'),
+        includeBody: z
+          .boolean()
+          .optional()
+          .describe(
+            "Include each card's Markdown body. Default false — list views omit bodies to stay small; use get_card to read one body."
+          ),
+        limit: z
+          .number()
+          .optional()
+          .describe('Cap the number of cards returned (after filtering).'),
       },
     },
-    async ({ boardUrl, columnId, assigneeId, labelId, parentId }) => {
+    async ({ boardUrl, columnId, assigneeId, labelId, parentId, includeBody, limit }) => {
       const adapter = await pickWorkflowAdapter(boardUrl);
       const env = resolveWorkflowEnv(boardUrl);
-      const filter = { columnId, assigneeId, labelId, parentId };
+      const filter = {
+        columnId,
+        assigneeId,
+        labelId,
+        parentId,
+        includeBody: includeBody ?? false,
+        limit,
+      };
       const result = await adapter.listCards(env, boardUrl, filter);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
