@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 — 2026-05-26
+
+Bumps `@verevoir/context` to `^0.9.0` — picks up `ContextStore.serialize()` (park/restore, 0.8.0) and `wrapWorkflowWithCache` (0.9.0). No tool-surface change: the cached source reads (`read_file` / `grep` / `find_symbol`) ride the latest cache, and the server dogfoods it driving boards + repos. Notion entries revalidate cheaply past the TTL grace window via the source adapter's `isFresh` (one `pages.retrieve` `last_edited_time` compare — no content re-fetch). Wiring `wrapWorkflowWithCache` into the workflow tools (cached `list_cards` / `get_card`) is a follow-up.
+
 ## 0.5.0 — 2026-05-26
 
 **`list_cards` omits bodies by default** (STDIO-93). The tool gains `includeBody` (default **false**) and `limit`. Large boards / long-bodied DBs (e.g. an ADR database) previously returned every card's full Markdown body in one response and could overflow the model's tool-result budget; now list views are lean by default — read a single body with `get_card`, or pass `includeBody: true` when you really want them all. Bumps `@verevoir/workflows` to `^0.4.0` (which carries the `includeBody`/`limit` `CardFilter` options).
