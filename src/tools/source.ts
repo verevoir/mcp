@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { grep } from '@verevoir/context';
+import { grepSource, warmSource } from '@verevoir/context';
 import { findSymbols } from '@verevoir/context/code';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 
@@ -89,7 +89,7 @@ export function registerSourceTools(server: McpServer): void {
     'grep',
     {
       description:
-        'Search file contents for a pattern across a source. Prefer over shell grep for project files — it reuses the cache the rest of the session shares. Searches ONLY content already pulled in by read_file, so read the files you want to search first, then grep. Returns GrepHit[] with line + context.',
+        'Search file contents for a pattern across an entire source on demand. Scans the whole tree (skipping vendored / build dirs), pulling files into the shared cache as it goes — no need to read files first. Prefer over shell grep for project files. Returns GrepHit[] with line + context.',
       inputSchema: {
         sourceUrl: z
           .string()
@@ -108,13 +108,13 @@ export function registerSourceTools(server: McpServer): void {
       },
     },
     async ({ sourceUrl, pattern, ref, ignoreCase, maxResults }) => {
-      const result = grep(
-        pattern,
-        {
-          sources: [{ sourceId: sourceUrl, version: ref ?? '' }],
-        },
-        { ignoreCase, maxResults }
-      );
+      const adapter = await pickSourceAdapter(sourceUrl);
+      const env = resolveSourceEnv(sourceUrl);
+      const result = await grepSource(adapter, env, sourceUrl, pattern, {
+        ref,
+        ignoreCase,
+        maxResults,
+      });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
@@ -126,7 +126,7 @@ export function registerSourceTools(server: McpServer): void {
     'find_symbol',
     {
       description:
-        'Find where a named function, class, method, interface, type, or enum is defined, via the tree-sitter symbol index. Prefer over guessing or shell-grepping for definitions. Parses content already pulled in by read_file, so read the relevant files first. Returns SymbolHit[] with file path and line range.',
+        'Find where a named function, class, method, interface, type, or enum is defined — scans the whole source on demand, tree-sitter-parsing files into the shared cache as it goes (no need to read files first). Prefer over guessing or shell-grepping for definitions. Returns SymbolHit[] with file path and line range.',
       inputSchema: {
         sourceUrl: z
           .string()
@@ -147,6 +147,9 @@ export function registerSourceTools(server: McpServer): void {
       },
     },
     async ({ sourceUrl, name, ref, kind }) => {
+      const adapter = await pickSourceAdapter(sourceUrl);
+      const env = resolveSourceEnv(sourceUrl);
+      await warmSource(adapter, env, sourceUrl, { ref });
       const hits = findSymbols(name, {
         sources: [{ sourceId: sourceUrl, version: ref ?? '' }],
       });
