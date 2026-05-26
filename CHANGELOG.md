@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 — 2026-05-26
+
+**`grep` + `find_symbol` go cold** (STDIO-83). The tools no longer search only what `read_file` has already pulled in — they scan the **whole source on demand**, warming the shared cache as they go:
+
+- `grep` → `grepSource(adapter, …)`: enumerates the routed source's tree (skipping vendored / build dirs), pulls every text file into the cache in parallel (bounded concurrency), then matches. Works for local paths, GitHub repos, and Notion alike via the routed adapter.
+- `find_symbol` → `warmSource(adapter, …)` then `findSymbols`: same cold warm, then tree-sitter symbol search over the warmed content.
+- Tool descriptions updated — the old "read the files you want to search first" instruction is gone; cold search needs no pre-`read_file`.
+
+Bumps `@verevoir/context` to `^0.7.0` (the version exposing `grepSource` / `warmSource`).
+
 ## 0.3.5 — 2026-05-25
 
 **Project doctrine composed from the manifest** (STDIO-85 v1, part 1). The server now reads the project pointer manifest (`aigency.json`, per ADR 023) at startup and composes a project-specific **## This project** section onto the universal doctrine — naming _this_ project's work tracker, project record, and ADR database as concrete Notion URLs, so the "read the board / put work on the board" steer resolves to real destinations instead of staying abstract.
