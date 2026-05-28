@@ -30,3 +30,4 @@ When something is wrong, or a change needs to land in many places, ask whether y
 
 - **Trace work to the tracker.** When you act on a tracked item, carry its id through the branch, commit, and PR title (e.g. `<id>: <subject>`) so the change links back to the board.
 - **One change, one purpose.** Keep commits and PRs single-purpose, and state how you verified them (tests run, checks passed). Prefer a stack of small PRs over one omnibus diff.
+- **Trust git for merge state, not `gh`.** In a multi-repo workspace `gh` infers the repo from the current directory, so `gh pr view N` can silently report a _different_ repo's PR (tell-tale: a `mergedAt` that predates the PR's creation). Pass `--repo owner/name` on every `gh` call, and confirm a merge with git — `git fetch && git merge-base --is-ancestor <sha> origin/main` — not `gh pr view`.
