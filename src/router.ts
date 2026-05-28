@@ -12,7 +12,7 @@ import { wrapWorkflowWithCache } from '@verevoir/context';
 type SourceKind = 'github' | 'fs' | 'notion';
 
 function classifySourceUrl(sourceUrl: string): SourceKind {
-  if (sourceUrl.startsWith('https://github.com/')) return 'github';
+  if (/^https?:\/\/(www\.)?github\.com\//.test(sourceUrl)) return 'github';
   if (/^https?:\/\/(www\.)?notion\.so\//.test(sourceUrl)) return 'notion';
   if (
     sourceUrl.startsWith('/') ||

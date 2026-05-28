@@ -20,9 +20,15 @@ describe('manifestPath', () => {
     expect(manifestPath(['node', 'bin.js'], '/srv/proj')).toBe('/srv/proj/aigency.json');
   });
 
-  it('ignores a --manifest flag with no following value', () => {
-    expect(manifestPath(['node', 'bin.js', '--manifest'], '/srv/proj')).toBe(
-      '/srv/proj/aigency.json'
+  it('throws when --manifest has no following value (rather than silently falling back)', () => {
+    expect(() => manifestPath(['node', 'bin.js', '--manifest'], '/srv/proj')).toThrow(
+      '--manifest requires a path'
+    );
+  });
+
+  it('throws when --manifest is followed by another flag', () => {
+    expect(() => manifestPath(['node', 'bin.js', '--manifest', '--verbose'], '/srv/proj')).toThrow(
+      '--manifest requires a path'
     );
   });
 });

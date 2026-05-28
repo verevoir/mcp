@@ -15,12 +15,21 @@ export interface AigencyManifest {
 
 /** Resolve where to read the manifest from, per ADR 023: an explicit
  * `--manifest <path>` arg wins; otherwise `aigency.json` in the working
- * directory the server was launched in. `argv` / `cwd` are injectable for
- * testing. */
+ * directory the server was launched in. A `--manifest` with no path (or
+ * followed by another flag) throws rather than silently falling back — a
+ * botched launch arg should fail loudly, not quietly start the server in
+ * no-project mode. `argv` / `cwd` are injectable for testing. */
 export function manifestPath(argv: string[] = process.argv, cwd: string = process.cwd()): string {
   const i = argv.indexOf('--manifest');
-  const explicit = i !== -1 ? argv[i + 1] : undefined;
-  if (explicit) return resolve(explicit);
+  if (i !== -1) {
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith('-')) {
+      throw new Error(
+        '--manifest requires a path argument (e.g. --manifest /path/to/aigency.json)'
+      );
+    }
+    return resolve(value);
+  }
   return resolve(cwd, 'aigency.json');
 }
 

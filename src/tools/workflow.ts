@@ -3,6 +3,17 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CardCreate, CardPatch } from '@verevoir/workflows';
 import { pickWorkflowAdapter, resolveWorkflowEnv } from '../router.js';
 
+/** Drop keys whose value is `undefined` so a partial update carries only
+ * the fields the caller actually supplied — `{ title }`, not
+ * `{ title, body: undefined, ... }`. The CardPatch contract says adapters
+ * MUST ignore undefined keys (and the Notion + Trello adapters do), but
+ * stripping at the MCP boundary keeps payloads clean and protects any
+ * future adapter that naively iterates the patch. Falsy-but-defined
+ * values (`''`, `[]`) are kept — those are meaningful writes. */
+export function definedOnly<T extends object>(obj: T): Partial<T> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
 export function registerWorkflowTools(server: McpServer): void {
   // -------------------------------------------------------------------------
   // list_columns
@@ -160,7 +171,7 @@ export function registerWorkflowTools(server: McpServer): void {
     async ({ boardUrl, cardId, title, body, columnId, labelIds, dueDate }) => {
       const adapter = await pickWorkflowAdapter(boardUrl);
       const env = resolveWorkflowEnv(boardUrl);
-      const patch: CardPatch = { title, body, columnId, labelIds, dueDate };
+      const patch = definedOnly<CardPatch>({ title, body, columnId, labelIds, dueDate });
       await adapter.updateCard(env, boardUrl, cardId, patch);
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
