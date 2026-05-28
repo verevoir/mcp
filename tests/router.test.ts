@@ -8,6 +8,12 @@ describe('pickSourceAdapter', () => {
     expect(typeof adapter.readFile).toBe('function');
   });
 
+  it('returns the github adapter for a www.github.com URL', async () => {
+    const adapter = await pickSourceAdapter('https://www.github.com/verevoir/context');
+    expect(adapter).toBeDefined();
+    expect(typeof adapter.readFile).toBe('function');
+  });
+
   it('returns the fs adapter for an absolute path', async () => {
     const adapter = await pickSourceAdapter('/Users/adam/projects/foo');
     expect(adapter).toBeDefined();
