@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { grepSource, warmSource } from '@verevoir/context';
 import { findSymbols } from '@verevoir/context/code';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
+import { applyEdit } from '../edit.js';
 
 export function registerSourceTools(server: McpServer): void {
   // -------------------------------------------------------------------------
@@ -189,6 +190,51 @@ export function registerSourceTools(server: McpServer): void {
       const env = resolveSourceEnv(sourceUrl);
       await adapter.writeFile(env, sourceUrl, path, content, branch, commitMessage);
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // edit_file
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    'edit_file',
+    {
+      description:
+        'Surgically edit a file in any source: replace an exact `oldString` with `newString`, then re-populate the read cache. Keeps the whole read->edit->write cycle inside this toolchain (no built-in Read/Edit needed), and works on local, GitHub, and Notion sources alike. `oldString` must match exactly once unless `replaceAll` is set — include enough surrounding context to make it unique. GitHub commits to `branch`; filesystem writes directly (branch + commitMessage ignored). Returns { ok: true, replacements }.',
+      inputSchema: {
+        sourceUrl: z
+          .string()
+          .describe(
+            'Source, auto-routed by form: local path (/abs/path or file://...), GitHub repo (https://github.com/owner/repo), or Notion (https://www.notion.so/<id>).'
+          ),
+        path: z.string().describe('File path within the source.'),
+        oldString: z
+          .string()
+          .describe('Exact text to replace. Must match exactly once unless replaceAll is true.'),
+        newString: z.string().describe('Replacement text.'),
+        branch: z
+          .string()
+          .describe('Branch to commit to (GitHub). Ignored for filesystem sources.'),
+        commitMessage: z
+          .string()
+          .describe('Commit message (GitHub). Ignored for filesystem sources.'),
+        replaceAll: z
+          .boolean()
+          .optional()
+          .describe('Replace every occurrence instead of requiring a unique match. Default false.'),
+      },
+    },
+    async ({ sourceUrl, path, oldString, newString, branch, commitMessage, replaceAll }) => {
+      const adapter = await pickSourceAdapter(sourceUrl);
+      const env = resolveSourceEnv(sourceUrl);
+      const { content } = await adapter.readFile(env, sourceUrl, path, branch);
+      const result = applyEdit(content, oldString, newString, replaceAll ?? false);
+      await adapter.writeFile(env, sourceUrl, path, result.content, branch, commitMessage);
+      return {
+        content: [
+          { type: 'text', text: JSON.stringify({ ok: true, replacements: result.replacements }) },
+        ],
+      };
     }
   );
 }
