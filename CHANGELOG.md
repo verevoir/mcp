@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 — 2026-05-28
+
+- **New: `edit_file` tool** (STDIO-122) — surgical `oldString`/`newString` edits through the cached adapter: read the file, replace an exact unique substring (or every occurrence with `replaceAll`), write it back, and repopulate the read cache, keeping the read→edit→write cycle in-toolchain across local, GitHub, and Notion sources. Errors clearly on no-match, ambiguous match, and empty/identical strings.
+- **Input hardening** (STDIO-135): `manifestPath` throws on a `--manifest` with no path (or a flag value) instead of silently starting in no-project mode; `classifySourceUrl` matches `www.` and `http` GitHub URLs (mirrors the Notion matcher); `update_card` strips undefined patch keys at the boundary — clean payloads and protection for any future adapter (the Notion + Trello adapters already ignore undefined).
+- Picks up `@verevoir/context` 0.9.1 (the `wrapWithCache` stale-read fix) via the existing `^0.9.0` range.
+
 ## 0.7.0 — 2026-05-26
 
 **Workflow reads now cached.** `pickWorkflowAdapter` wraps the Trello / Notion adapters with `wrapWorkflowWithCache` (context 0.9.0), so `list_columns` / `list_cards` / `get_card` / `list_comments` / `list_custom_fields` get read-through caching with cheap `isCardFresh` revalidation past the ~10s grace window (one `pages.retrieve` `last_edited_time` compare on Notion). Writes (`create_card` / `update_card` / `move_card` / `add_comment`) pass through and invalidate the touched card + list views. The workflow twin of the cached source subpaths — collapses correlated re-reads within a process. Default 10s TTL (tune via the wrapper if ever needed; even a sub-second window meaningfully de-dupes intra-process reads).
