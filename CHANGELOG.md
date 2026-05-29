@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.0 — 2026-05-29
+
+**Doctrine + write-tool descriptions firmed to prefer the MCP over shell/built-ins** (STDIO-157, the original thrust of the card now that 0.8.0/0.9.0 made the cache claims true). No behaviour change — this sharpens how the server presents so an agent reaches for the MCP instead of reflexive `grep`/`sed`/`cat` or the built-in Edit/Write.
+
+- **`instructions.md` lede is now imperative and splits reads from writes.** Writes through the MCP are the **firm rule** — a bypassing write (shell redirection, `sed -i`, built-in Edit/Write on a covered path) leaves the shared `@verevoir/context` cache stale and _wrong_ for the rest of the session, so later reads/searches serve pre-write content. Reads stay a strong preference (a bypassed read only misses the cache + index benefit). Mirrors the priority reframe on STDIO-157: a bypassed write corrupts state, a bypassed read only forgoes a benefit.
+- **Fixed a now-false claim in the File-workflow section.** It still said `grep` / `find_symbol` "see only content already pulled by `read_file`, so read first" — untrue since 0.4.0's cold scan (and contradicted by the tool descriptions themselves). It now states they scan the whole source on demand and need no prior `read_file`, so the doctrine no longer advertises a limitation that doesn't exist and nudges agents back to shell.
+- **`write_file` / `edit_file` descriptions** now lead with "prefer over the built-in Write/Edit (and shell redirection) for a covered path" and spell out the cache-corruption rationale, matching the read-side tools' existing "prefer over the built-in Read / shell grep" steer.
+
+Pure doc/description change — no dependency bump, no tool-surface change. The deeper cache-key follow-up is STDIO-164.
+
 ## 0.9.0 — 2026-05-29
 
 **Source reads and writes are now cache-correct** (STDIO-157 / STDIO-163). Two fixes to how the source tools interact with the shared `@verevoir/context` store that `grep` / `find_symbol` warm:

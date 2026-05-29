@@ -1,6 +1,9 @@
 # Working with this project via Verevoir
 
-Verevoir is the front door for reading and writing files, code, and project context. Prefer these tools over your built-in filesystem/shell tools (Read, cat, grep, find, ls) whenever a `sourceUrl` or `boardUrl` fits.
+Verevoir is the front door for reading and writing files, code, and project context. These tools share a cache + tree-sitter index across the whole session; your built-in filesystem/shell tools do not — so reaching for them in preference is not a style nicety, it keeps that shared view correct.
+
+- **Writes — always through the MCP.** Make every change to a covered `sourceUrl` / `boardUrl` with `write_file` / `edit_file` (or the card tools). A write that goes around them — shell redirection, `sed -i`, or the built-in Edit/Write on a covered path — leaves the shared cache stale and _wrong_ for the rest of the session, so later reads and searches serve pre-write content. This is the firm rule: never edit a covered file out-of-band.
+- **Reads — prefer the MCP.** Use `read_file` / `grep` / `find_symbol` over the built-in Read / `cat` / shell `grep` / `find` / `ls`. A bypassed read is less costly than a bypassed write — it only misses the cache + index benefit (slower, duplicate fetches, no Notion) rather than corrupting state — but the MCP is still the default whenever a `sourceUrl` fits.
 
 ## One surface, auto-routed by URL
 
@@ -14,7 +17,7 @@ Reads are cached and tree-sitter symbol-indexed via `@verevoir/context` and shar
 
 ## File workflow
 
-`get_repo_tree` or `list_files` to orient → `read_file` to pull content (this warms the cache) → `grep` / `find_symbol` for instant structural search. `grep` and `find_symbol` see only content already pulled by `read_file`, so read first.
+`get_repo_tree` or `list_files` to orient → `read_file` to pull a specific file (this warms the cache) → `grep` / `find_symbol` to search. `grep` and `find_symbol` scan the whole source on demand and warm the cache as they go, so they need no prior `read_file` — reach for them directly when you're searching rather than opening one file you already know.
 
 ## Project state lives in the tools, not the local git tree
 
