@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0 — 2026-05-29
+
+**Source reads and writes are now cache-correct** (STDIO-157 / STDIO-163). Two fixes to how the source tools interact with the shared `@verevoir/context` store that `grep` / `find_symbol` warm:
+
+- **`read_file` reads through the cache.** It now wraps the adapter with `wrapWithCache` instead of calling it raw, so a read is served from / populates the shared `ContextStore` — making its "reads are cached… warms the index" contract true, and warming the content index for later `grep` / `find_symbol`.
+- **Writes invalidate the cache.** `write_file` / `edit_file` drop the written file from the shared store (content + symbols, default-ref and branch scope) after writing, so a search after a write re-fetches and re-indexes rather than serving pre-write content. Previously a warm-then-edit served stale results.
+
+No tool-surface change. Uses existing `@verevoir/context` `^0.9.0` APIs (`wrapWithCache`, `invalidateItem`) — no dependency bump. (A primary/canonical cache key that collapses the dual-scope invalidate is the follow-up, STDIO-164.)
+
 ## 0.8.0 — 2026-05-28
 
 - **New: `edit_file` tool** (STDIO-122) — surgical `oldString`/`newString` edits through the cached adapter: read the file, replace an exact unique substring (or every occurrence with `replaceAll`), write it back, and repopulate the read cache, keeping the read→edit→write cycle in-toolchain across local, GitHub, and Notion sources. Errors clearly on no-match, ambiguous match, and empty/identical strings.
