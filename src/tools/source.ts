@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { grepSource, warmSource } from '@verevoir/context';
+import { grepSource, warmSource, wrapWithCache } from '@verevoir/context';
 import { findSymbols } from '@verevoir/context/code';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 import { applyEdit } from '../edit.js';
@@ -26,7 +26,7 @@ export function registerSourceTools(server: McpServer): void {
       },
     },
     async ({ sourceUrl, path, ref }) => {
-      const adapter = await pickSourceAdapter(sourceUrl);
+      const adapter = wrapWithCache(await pickSourceAdapter(sourceUrl));
       const env = resolveSourceEnv(sourceUrl);
       const result = await adapter.readFile(env, sourceUrl, path, ref);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
