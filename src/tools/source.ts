@@ -4,6 +4,7 @@ import { grepSource, warmSource } from '@verevoir/context';
 import { findSymbols } from '@verevoir/context/code';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 import { applyEdit } from '../edit.js';
+import { invalidateWrittenFile } from '../cache.js';
 
 export function registerSourceTools(server: McpServer): void {
   // -------------------------------------------------------------------------
@@ -168,7 +169,7 @@ export function registerSourceTools(server: McpServer): void {
     'write_file',
     {
       description:
-        "Write a file's full contents to a source and populate the read cache with it. GitHub sources commit to the given branch via the contents API; filesystem sources write directly to disk with no git staging (branch + commitMessage ignored). Returns { ok: true }.",
+        "Write a file's full contents to a source, then invalidate it in the shared read cache so the next grep/find_symbol re-fetches it. GitHub sources commit to the given branch via the contents API; filesystem sources write directly to disk with no git staging (branch + commitMessage ignored). Returns { ok: true }.",
       inputSchema: {
         sourceUrl: z
           .string()
@@ -189,6 +190,7 @@ export function registerSourceTools(server: McpServer): void {
       const adapter = await pickSourceAdapter(sourceUrl);
       const env = resolveSourceEnv(sourceUrl);
       await adapter.writeFile(env, sourceUrl, path, content, branch, commitMessage);
+      invalidateWrittenFile(sourceUrl, path, branch);
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
     }
   );
@@ -200,7 +202,7 @@ export function registerSourceTools(server: McpServer): void {
     'edit_file',
     {
       description:
-        'Surgically edit a file in any source: replace an exact `oldString` with `newString`, then re-populate the read cache. Keeps the whole read->edit->write cycle inside this toolchain (no built-in Read/Edit needed), and works on local, GitHub, and Notion sources alike. `oldString` must match exactly once unless `replaceAll` is set — include enough surrounding context to make it unique. GitHub commits to `branch`; filesystem writes directly (branch + commitMessage ignored). Returns { ok: true, replacements }.',
+        'Surgically edit a file in any source: replace an exact `oldString` with `newString`, then invalidate it in the shared read cache so the next grep/find_symbol re-fetches it. Keeps the whole read->edit->write cycle inside this toolchain (no built-in Read/Edit needed), and works on local, GitHub, and Notion sources alike. `oldString` must match exactly once unless `replaceAll` is set — include enough surrounding context to make it unique. GitHub commits to `branch`; filesystem writes directly (branch + commitMessage ignored). Returns { ok: true, replacements }.',
       inputSchema: {
         sourceUrl: z
           .string()
@@ -230,6 +232,7 @@ export function registerSourceTools(server: McpServer): void {
       const { content } = await adapter.readFile(env, sourceUrl, path, branch);
       const result = applyEdit(content, oldString, newString, replaceAll ?? false);
       await adapter.writeFile(env, sourceUrl, path, result.content, branch, commitMessage);
+      invalidateWrittenFile(sourceUrl, path, branch);
       return {
         content: [
           { type: 'text', text: JSON.stringify({ ok: true, replacements: result.replacements }) },
