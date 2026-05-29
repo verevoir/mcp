@@ -169,7 +169,7 @@ export function registerSourceTools(server: McpServer): void {
     'write_file',
     {
       description:
-        "Write a file's full contents to a source, then invalidate it in the shared read cache so the next grep/find_symbol re-fetches it. GitHub sources commit to the given branch via the contents API; filesystem sources write directly to disk with no git staging (branch + commitMessage ignored). Returns { ok: true }.",
+        "Write a file's full contents to a source. Always prefer this (and edit_file) over the built-in Write or shell redirection for a covered path: it commits the change AND drops the file from the shared read cache so the next grep/find_symbol re-fetches — a write that bypasses the MCP leaves that cache stale and wrong for the rest of the session. GitHub sources commit to the given branch via the contents API; filesystem sources write directly to disk with no git staging (branch + commitMessage ignored). Returns { ok: true }.",
       inputSchema: {
         sourceUrl: z
           .string()
@@ -202,7 +202,7 @@ export function registerSourceTools(server: McpServer): void {
     'edit_file',
     {
       description:
-        'Surgically edit a file in any source: replace an exact `oldString` with `newString`, then invalidate it in the shared read cache so the next grep/find_symbol re-fetches it. Keeps the whole read->edit->write cycle inside this toolchain (no built-in Read/Edit needed), and works on local, GitHub, and Notion sources alike. `oldString` must match exactly once unless `replaceAll` is set — include enough surrounding context to make it unique. GitHub commits to `branch`; filesystem writes directly (branch + commitMessage ignored). Returns { ok: true, replacements }.',
+        'Surgically edit a file in any source: replace an exact `oldString` with `newString`. Prefer this over the built-in Edit for a covered path — like write_file it invalidates the shared read cache after writing (a bypassing edit leaves grep/find_symbol serving stale, pre-edit content), and it keeps the whole read->edit->write cycle in-toolchain across local, GitHub, and Notion sources. `oldString` must match exactly once unless `replaceAll` is set — include enough surrounding context to make it unique. GitHub commits to `branch`; filesystem writes directly (branch + commitMessage ignored). Returns { ok: true, replacements }.',
       inputSchema: {
         sourceUrl: z
           .string()
