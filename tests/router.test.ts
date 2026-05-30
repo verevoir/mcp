@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickSourceAdapter, pickWorkflowAdapter } from '../src/router.js';
+import { pickSourceAdapter, pickWorkflowAdapter, resolveWorkflowEnv } from '../src/router.js';
 
 describe('pickSourceAdapter', () => {
   it('returns the github adapter for a github.com URL', async () => {
@@ -78,9 +78,37 @@ describe('pickWorkflowAdapter', () => {
     expect(typeof adapter.listColumns).toBe('function');
   });
 
+  it('returns an adapter for an absolute path (Obsidian Kanban board)', async () => {
+    const adapter = await pickWorkflowAdapter('/abs/path/Board.md');
+    expect(adapter).toBeDefined();
+    expect(typeof adapter.listColumns).toBe('function');
+  });
+
+  it('returns an adapter for a file:// board URL (Obsidian Kanban board)', async () => {
+    const adapter = await pickWorkflowAdapter('file:///abs/path/Board.md');
+    expect(adapter).toBeDefined();
+    expect(typeof adapter.listColumns).toBe('function');
+  });
+
   it('throws for a Jira URL', async () => {
     await expect(
       pickWorkflowAdapter('https://myorg.atlassian.net/jira/software/projects/P')
     ).rejects.toThrow('Unsupported board URL');
+  });
+
+  it('throws for a bare unsupported string', async () => {
+    await expect(pickWorkflowAdapter('gitlab.com/x')).rejects.toThrow('Unsupported board URL');
+  });
+});
+
+describe('resolveWorkflowEnv', () => {
+  it('returns { token: "" } for an absolute path (Obsidian Kanban board)', () => {
+    const env = resolveWorkflowEnv('/abs/path/Board.md');
+    expect(env).toEqual({ token: '' });
+  });
+
+  it('returns { token: "" } for a file:// board URL (Obsidian Kanban board)', () => {
+    const env = resolveWorkflowEnv('file:///abs/path/Board.md');
+    expect(env).toEqual({ token: '' });
   });
 });

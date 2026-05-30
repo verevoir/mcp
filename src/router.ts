@@ -3,6 +3,7 @@ import type { WorkflowAdapter, WorkflowEnv } from '@verevoir/workflows';
 import { envFromProcessEnv } from '@verevoir/sources';
 import { envFromTrelloProcessEnv } from '@verevoir/workflows/trello';
 import { envFromNotionProcessEnv } from '@verevoir/workflows/notion';
+import { envFromObsidianProcessEnv, parseObsidianBoardPath } from '@verevoir/workflows/obsidian';
 import { wrapWorkflowWithCache } from '@verevoir/context';
 
 // ---------------------------------------------------------------------------
@@ -82,9 +83,13 @@ export async function pickWorkflowAdapter(boardUrl: string): Promise<WorkflowAda
     const { notion } = await import('@verevoir/workflows/notion');
     return wrapWorkflowWithCache(notion);
   }
+  if (parseObsidianBoardPath(boardUrl) !== null) {
+    const { obsidian } = await import('@verevoir/workflows/obsidian');
+    return wrapWorkflowWithCache(obsidian);
+  }
   // Future: Jira, Linear adapters would slot in here.
   throw new Error(
-    `Unsupported board URL: ${boardUrl}. Expected https://trello.com/b/<id> or https://www.notion.so/<db-id>.`
+    `Unsupported board URL: ${boardUrl}. Expected https://trello.com/b/<id>, https://www.notion.so/<db-id>, or an absolute path / file:// URL to an Obsidian Kanban board .md.`
   );
 }
 
@@ -112,7 +117,10 @@ export function resolveWorkflowEnv(boardUrl: string): WorkflowEnv {
     if (!env) throw new Error('NOTION_API_KEY not set — required for Notion databases.');
     return env;
   }
+  if (parseObsidianBoardPath(boardUrl) !== null) {
+    return envFromObsidianProcessEnv();
+  }
   throw new Error(
-    `Unsupported board URL: ${boardUrl}. Expected https://trello.com/b/<id> or https://www.notion.so/<db-id>.`
+    `Unsupported board URL: ${boardUrl}. Expected https://trello.com/b/<id>, https://www.notion.so/<db-id>, or an absolute path / file:// URL to an Obsidian Kanban board .md.`
   );
 }

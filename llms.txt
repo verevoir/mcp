@@ -14,6 +14,7 @@ Sibling to `@verevoir/sources` (file-source contracts), `@verevoir/context` (cac
 - `GITHUB_TOKEN` — fine-grained PAT with `Contents: Read + Write` on target repos. Only required for GitHub URLs.
 - `TRELLO_API_KEY` + `TRELLO_API_TOKEN` + `TRELLO_REFERER` — from a personal Trello Power-Up at https://trello.com/power-ups/admin. The Power-Up's allowed origin MUST match `TRELLO_REFERER` or Trello returns 401 "invalid key". Only required for Trello URLs.
 - `NOTION_API_KEY` — Notion integration token (`ntn_...`) from https://www.notion.so/profile/integrations. Share the pages / databases the integration should reach via Notion's Connections UI. Required for both Notion source and Notion workflow URLs.
+- **Obsidian Kanban** — no credentials required. Optional tuning via env vars read inside the adapter at call time: `OBSIDIAN_VAULT_PATH`, `OBSIDIAN_ID_FIELD` (default `id`), `OBSIDIAN_CARD_FOLDER`, `OBSIDIAN_DATE_FIELD` (default `due`), `OBSIDIAN_TAGS_FIELD` (default `tags`).
 
 ## Install
 
@@ -73,7 +74,7 @@ write_file({ sourceUrl, path, content, branch, commitMessage }) → { ok: true }
 
 ### Workflow tools (kanban / issue / objective sources)
 
-URL routing: `https://trello.com/b/<id>` → Trello adapter; `https://www.notion.so/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter (auto-detects status / title / people / multi_select property mapping); other backends as adapters are added.
+URL routing: `https://trello.com/b/<id>` → Trello adapter; `https://www.notion.so/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter (auto-detects status / title / people / multi_select property mapping); absolute path or `file://` URL → Obsidian Kanban adapter (local board `.md`; lanes are columns; the linked note is the card source of truth; no creds); other backends as adapters are added.
 
 ```ts
 list_columns({ boardUrl })                                                              → Column[]

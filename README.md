@@ -4,7 +4,7 @@ MCP server exposing the Verevoir foundation as Claude-Code-usable tools. Cached 
 
 ## Purpose
 
-Lets an LLM agent (or anyone driving Claude Code) work against multiple sources — GitHub repos, local filesystems, Notion workspaces, Trello boards — through one stable tool surface. Reads are cached via `@verevoir/context`; writes go through the underlying adapter and populate the cache so subsequent reads see the new content without a refetch.
+Lets an LLM agent (or anyone driving Claude Code) work against multiple sources — GitHub repos, local filesystems, Notion workspaces, Trello boards, and Obsidian Kanban boards — through one stable tool surface. Reads are cached via `@verevoir/context`; writes go through the underlying adapter and populate the cache so subsequent reads see the new content without a refetch.
 
 Sibling to [`@verevoir/sources`](https://github.com/verevoir/sources), [`@verevoir/context`](https://github.com/verevoir/context), and [`@verevoir/workflows`](https://github.com/verevoir/workflows). This package wires them together as an MCP server.
 
@@ -15,6 +15,7 @@ Sibling to [`@verevoir/sources`](https://github.com/verevoir/sources), [`@verevo
   - **GitHub PAT** — fine-grained, with `Contents: Read + Write` on whichever repos you want the tools to touch. Add `Pull requests: Read + Write` and `Workflows: Read + Write` if you'll expand the tool surface later.
   - **Trello Power-Up** — created at https://trello.com/power-ups/admin. From the Power-Up's **API Key** tab, generate the API key + the user token (the "Token" hyperlink on the same page). Note the allowed-origin URL — the MCP server must send it as the `Referer` or Trello returns 401.
   - **Notion integration** — create one at https://www.notion.so/profile/integrations, then share the relevant pages / databases with the integration from Notion's "Connections" UI. The integration token (`ntn_…`) is what you set as `NOTION_API_KEY`.
+  - **Obsidian Kanban** — no credentials required. Pass the absolute path (or `file://` URL) to a Kanban board `.md` as `boardUrl`. Optional tuning via env vars read at call time: `OBSIDIAN_VAULT_PATH`, `OBSIDIAN_ID_FIELD` (default `id`), `OBSIDIAN_CARD_FOLDER`, `OBSIDIAN_DATE_FIELD` (default `due`), `OBSIDIAN_TAGS_FIELD` (default `tags`).
 
 ## Install
 
@@ -134,6 +135,7 @@ All take a `boardUrl`:
 
 - `https://trello.com/b/<id>` → Trello adapter.
 - `https://www.notion.so/<workspace>/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter. Rows become `Card`s; auto-detects which property is the status / column from the database schema.
+- Absolute filesystem path or `file://` URL → Obsidian Kanban adapter. Local board `.md`; `## headings` are columns; `- [ ] [[Note]]` wikilinks are cards; the linked note is the card source of truth; no credentials required.
 
 | Tool            | Args                                                                  | Returns        |
 | --------------- | --------------------------------------------------------------------- | -------------- |
