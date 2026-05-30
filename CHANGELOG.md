@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0 — 2026-05-30
+
+Wire the Obsidian Kanban WorkflowAdapter (STDIO-186): `boardUrl`s that are an absolute path or `file://` URL route to `@verevoir/workflows/obsidian` (local board `.md`; lanes are columns; the linked note is the card source of truth; no creds; optional `OBSIDIAN_*` tuning env vars read inside the adapter at call time). Bumps `@verevoir/workflows` to `^0.5.0`. Tool `boardUrl` descriptions updated across all 8 workflow tools; README and llms.txt extended with the Obsidian routing line and prerequisites.
+
 ## 0.10.0 — 2026-05-29
 
 **Doctrine + write-tool descriptions firmed to prefer the MCP over shell/built-ins** (STDIO-157, the original thrust of the card now that 0.8.0/0.9.0 made the cache claims true). No behaviour change — this sharpens how the server presents so an agent reaches for the MCP instead of reflexive `grep`/`sed`/`cat` or the built-in Edit/Write.

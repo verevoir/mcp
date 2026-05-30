@@ -27,7 +27,7 @@ export function registerWorkflowTools(server: McpServer): void {
         boardUrl: z
           .string()
           .describe(
-            'Trello board URL (https://trello.com/b/<id>) or Notion database URL (https://www.notion.so/<db-id>).'
+            'Trello board URL (https://trello.com/b/<id>), Notion database URL (https://www.notion.so/<db-id>), or an Obsidian Kanban board path (absolute path or file:// to the board .md).'
           ),
       },
     },
@@ -51,7 +51,7 @@ export function registerWorkflowTools(server: McpServer): void {
         boardUrl: z
           .string()
           .describe(
-            'Trello board URL (https://trello.com/b/<id>) or Notion database URL (https://www.notion.so/<db-id>).'
+            'Trello board URL (https://trello.com/b/<id>), Notion database URL (https://www.notion.so/<db-id>), or an Obsidian Kanban board path (absolute path or file:// to the board .md).'
           ),
         columnId: z.string().optional().describe('Restrict to cards in this column.'),
         assigneeId: z.string().optional().describe('Restrict to cards assigned to this user.'),
@@ -96,7 +96,7 @@ export function registerWorkflowTools(server: McpServer): void {
         boardUrl: z
           .string()
           .describe(
-            'Trello board URL (https://trello.com/b/<id>) or Notion database URL (https://www.notion.so/<db-id>).'
+            'Trello board URL (https://trello.com/b/<id>), Notion database URL (https://www.notion.so/<db-id>), or an Obsidian Kanban board path (absolute path or file:// to the board .md).'
           ),
         cardId: z.string().describe('Card ID.'),
       },
@@ -120,7 +120,7 @@ export function registerWorkflowTools(server: McpServer): void {
         boardUrl: z
           .string()
           .describe(
-            'Trello board URL (https://trello.com/b/<id>) or Notion database URL (https://www.notion.so/<db-id>).'
+            'Trello board URL (https://trello.com/b/<id>), Notion database URL (https://www.notion.so/<db-id>), or an Obsidian Kanban board path (absolute path or file:// to the board .md).'
           ),
         columnId: z.string().describe('Column to create the card in.'),
         title: z.string().describe('Card title.'),
@@ -150,7 +150,7 @@ export function registerWorkflowTools(server: McpServer): void {
         boardUrl: z
           .string()
           .describe(
-            'Trello board URL (https://trello.com/b/<id>) or Notion database URL (https://www.notion.so/<db-id>).'
+            'Trello board URL (https://trello.com/b/<id>), Notion database URL (https://www.notion.so/<db-id>), or an Obsidian Kanban board path (absolute path or file:// to the board .md).'
           ),
         cardId: z.string().describe('Card ID to update.'),
         title: z.string().optional().describe('New title.'),
@@ -191,7 +191,7 @@ export function registerWorkflowTools(server: McpServer): void {
         boardUrl: z
           .string()
           .describe(
-            'Trello board URL (https://trello.com/b/<id>) or Notion database URL (https://www.notion.so/<db-id>).'
+            'Trello board URL (https://trello.com/b/<id>), Notion database URL (https://www.notion.so/<db-id>), or an Obsidian Kanban board path (absolute path or file:// to the board .md).'
           ),
         cardId: z.string().describe('Card ID to move.'),
         toColumnId: z.string().describe('Destination column ID.'),
@@ -219,7 +219,7 @@ export function registerWorkflowTools(server: McpServer): void {
         boardUrl: z
           .string()
           .describe(
-            'Trello board URL (https://trello.com/b/<id>) or Notion database URL (https://www.notion.so/<db-id>).'
+            'Trello board URL (https://trello.com/b/<id>), Notion database URL (https://www.notion.so/<db-id>), or an Obsidian Kanban board path (absolute path or file:// to the board .md).'
           ),
         cardId: z.string().describe('Card ID.'),
       },
@@ -243,7 +243,7 @@ export function registerWorkflowTools(server: McpServer): void {
         boardUrl: z
           .string()
           .describe(
-            'Trello board URL (https://trello.com/b/<id>) or Notion database URL (https://www.notion.so/<db-id>).'
+            'Trello board URL (https://trello.com/b/<id>), Notion database URL (https://www.notion.so/<db-id>), or an Obsidian Kanban board path (absolute path or file:// to the board .md).'
           ),
         cardId: z.string().describe('Card ID to comment on.'),
         body: z.string().describe('Comment body in Markdown.'),
