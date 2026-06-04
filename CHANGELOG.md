@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0 — 2026-06-04
+
+**Skill parsing moves to `@verevoir/recipes`** (STDIO-278). The inline recipe parser added in 0.12.0 is replaced by a dependency on the new public `@verevoir/recipes` library, so the format definition is shared with the aigency web app rather than ported. No behaviour change — the same descriptors parse the same way and register as the same prompts. Removes `src/skills.ts` and its unit tests (now covered in the library). `tools/skills.ts` imports `parseSkill` / `isReasoningSkill` / `renderSkillPrompt` from `@verevoir/recipes`.
+
 ## 0.12.0 — 2026-06-04
 
 **New: reasoning skills exposed as MCP prompts** (STDIO-277). At startup the server loads the guardrails skill corpus (`corpus/skills/*.md`, with a legacy `skills/` fallback) and registers each **reasoning** skill as an MCP prompt — the prompt returns the skill's instructions plus the supplied arguments as a user message, so the host model executes it. Deterministic (handler-backed) skills are not registered; the host typically already has those capabilities. The corpus source defaults to the canonical guardrails repo, overridable with `AIGENCY_GUARDRAILS_URL`. Loading is best-effort: a missing `GITHUB_TOKEN` or unreachable source leaves the server running with its tools and no skill prompts. `createServer` is now async (skill loading happens at startup). Skill parsing is a minimal in-repo port; a shared `@verevoir/skills` extraction so the web app and the server share one parser is the follow-up.

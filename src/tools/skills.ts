@@ -7,7 +7,7 @@ import {
   renderSkillPrompt,
   SkillParseError,
   type SkillDescriptor,
-} from '../skills.js';
+} from '@verevoir/recipes';
 
 // Expose the guardrails reasoning skills (`corpus/skills/*.md`) as MCP
 // prompts. Invoking a prompt returns the skill's instructions + the supplied

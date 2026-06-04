@@ -1,6 +1,6 @@
 {
   "name": "@verevoir/mcp",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "MCP server exposing the Verevoir foundation (cached reads via @verevoir/context + workflow operations via @verevoir/workflows) as tools usable from Claude Code and any other MCP-compatible client.",
   "license": "Apache-2.0",
   "type": "module",
@@ -34,14 +34,15 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@notionhq/client": "^5.22.0",
     "@verevoir/context": "^0.9.0",
+    "@verevoir/recipes": "^0.1.0",
     "@verevoir/sources": "^0.4.0",
     "@verevoir/workflows": "^0.5.0",
-    "@notionhq/client": "^5.22.0",
-    "yaml": "^2.0.0",
     "tree-sitter": "^0.21.1",
     "tree-sitter-javascript": "^0.23.1",
-    "tree-sitter-typescript": "^0.23.2"
+    "tree-sitter-typescript": "^0.23.2",
+    "yaml": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
