@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0 — 2026-06-04
+
+**New: reasoning skills exposed as MCP prompts** (STDIO-277). At startup the server loads the guardrails skill corpus (`corpus/skills/*.md`, with a legacy `skills/` fallback) and registers each **reasoning** skill as an MCP prompt — the prompt returns the skill's instructions plus the supplied arguments as a user message, so the host model executes it. Deterministic (handler-backed) skills are not registered; the host typically already has those capabilities. The corpus source defaults to the canonical guardrails repo, overridable with `AIGENCY_GUARDRAILS_URL`. Loading is best-effort: a missing `GITHUB_TOKEN` or unreachable source leaves the server running with its tools and no skill prompts. `createServer` is now async (skill loading happens at startup). Skill parsing is a minimal in-repo port; a shared `@verevoir/skills` extraction so the web app and the server share one parser is the follow-up.
+
 ## 0.11.0 — 2026-05-30
 
 Wire the Obsidian Kanban WorkflowAdapter (STDIO-186): `boardUrl`s that are an absolute path or `file://` URL route to `@verevoir/workflows/obsidian` (local board `.md`; lanes are columns; the linked note is the card source of truth; no creds; optional `OBSIDIAN_*` tuning env vars read inside the adapter at call time). Bumps `@verevoir/workflows` to `^0.5.0`. Tool `boardUrl` descriptions updated across all 8 workflow tools; README and llms.txt extended with the Obsidian routing line and prerequisites.
