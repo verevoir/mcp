@@ -1,12 +1,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerSourceTools } from './tools/source.js';
 import { registerWorkflowTools } from './tools/workflow.js';
+import { registerSkillPrompts } from './tools/skills.js';
 import { loadInstructions } from './instructions.js';
 import { loadManifest, composeInstructions } from './manifest.js';
 
-/** Construct and configure the MCP server. The caller is responsible for
+/** Construct and configure the MCP server. Async because skill prompts are
+ * loaded from the guardrails corpus at startup. The caller is responsible for
  * wiring a transport (see bin.ts). */
-export function createServer(): McpServer {
+export async function createServer(): Promise<McpServer> {
   const server = new McpServer(
     {
       name: 'verevoir-mcp',
@@ -23,6 +25,10 @@ export function createServer(): McpServer {
 
   registerSourceTools(server);
   registerWorkflowTools(server);
+  // Best-effort: registers the guardrails reasoning skills as prompts. A load
+  // failure (no token, source unreachable) leaves the server running with its
+  // tools and no skill prompts rather than failing to start.
+  await registerSkillPrompts(server);
 
   return server;
 }

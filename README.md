@@ -108,6 +108,10 @@ Env vars are read per-tool: GitHub tools only need `GITHUB_TOKEN`; Trello tools 
 
 Once configured + restarted, ask Claude to call `list_columns` against your Trello board. You should get an array of columns back. If you see "TRELLO_API_KEY not set" or "Trello returned 401: invalid key", the auth env or the Power-Up referer mismatch is the cause.
 
+## Prompts
+
+The server also registers the guardrails **reasoning skills** (`corpus/skills/*.md`) as MCP prompts. Invoking a prompt returns the skill's instructions plus your supplied arguments as a message for **your** model to execute — so a skill runs on the host's own tokens. Deterministic (handler-backed) skills are not registered as prompts; the host usually already has those capabilities. The corpus source defaults to the canonical guardrails repo and is overridable with `AIGENCY_GUARDRAILS_URL`; loading is best-effort, so a missing `GITHUB_TOKEN` simply means no skill prompts are registered. Requires an MCP client that supports prompts.
+
 ## Tools
 
 ### Source tools (file-shape sources)
