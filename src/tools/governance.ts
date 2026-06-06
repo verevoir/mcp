@@ -28,7 +28,7 @@ export interface GovernanceEntry {
  * entry carries what read_file needs. Returns [] when there's no manifest; an
  * unreadable ADRs source is skipped (pages still index, no fetch needed). */
 export async function loadGovernanceIndex(
-  manifest: AigencyManifest | null = loadManifest(),
+  manifest: AigencyManifest | null = loadManifest()
 ): Promise<GovernanceEntry[]> {
   const notion = manifest?.notion;
   if (!notion) return [];
@@ -64,7 +64,7 @@ export async function loadGovernanceIndex(
 /** Filter the index by an intent query (case-insensitive substring on title). */
 export function filterGovernance(
   index: GovernanceEntry[],
-  query: string | undefined,
+  query: string | undefined
 ): GovernanceEntry[] {
   const q = query?.trim().toLowerCase();
   if (!q) return index;
@@ -74,7 +74,7 @@ export function filterGovernance(
 function renderIndex(
   hits: GovernanceEntry[],
   index: GovernanceEntry[],
-  query: string | undefined,
+  query: string | undefined
 ): string {
   if (hits.length === 0) {
     return index.length === 0
@@ -83,7 +83,7 @@ function renderIndex(
   }
   const lines = hits.map(
     (e) =>
-      `- ${e.title}\n  read_file(sourceUrl: "${e.source}"${e.path ? `, path: "${e.path}"` : ''})`,
+      `- ${e.title}\n  read_file(sourceUrl: "${e.source}"${e.path ? `, path: "${e.path}"` : ''})`
   );
   const header = `${hits.length} governance entr${hits.length === 1 ? 'y' : 'ies'}${query ? ` matching "${query}"` : ''} — scan, then read the one you need:`;
   return `${header}\n\n${lines.join('\n')}`;
@@ -103,7 +103,7 @@ export function registerGovernanceTool(server: McpServer): void {
           .string()
           .optional()
           .describe(
-            'Intent to narrow by (case-insensitive substring on titles). Omit for the full index.',
+            'Intent to narrow by (case-insensitive substring on titles). Omit for the full index.'
           ),
       },
     },
@@ -113,6 +113,6 @@ export function registerGovernanceTool(server: McpServer): void {
       return {
         content: [{ type: 'text' as const, text: renderIndex(hits, index, query) }],
       };
-    },
+    }
   );
 }
