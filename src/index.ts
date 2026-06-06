@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerSourceTools } from './tools/source.js';
 import { registerWorkflowTools } from './tools/workflow.js';
 import { registerSkillPrompts } from './tools/skills.js';
+import { registerGovernanceTool } from './tools/governance.js';
 import { loadInstructions } from './instructions.js';
 import { loadManifest, composeInstructions } from './manifest.js';
 
@@ -25,6 +26,9 @@ export async function createServer(): Promise<McpServer> {
 
   registerSourceTools(server);
   registerWorkflowTools(server);
+  // Surface the project's governance (ADRs + key docs) as a scannable,
+  // narrowable index so even a small model finds the right decision.
+  registerGovernanceTool(server);
   // Best-effort: registers the guardrails reasoning skills as prompts. A load
   // failure (no token, source unreachable) leaves the server running with its
   // tools and no skill prompts rather than failing to start.
