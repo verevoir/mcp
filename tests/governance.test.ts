@@ -45,6 +45,29 @@ describe('filterGovernance', () => {
   it('returns nothing for a non-matching query (caller reports it)', () => {
     expect(filterGovernance(index, 'kubernetes')).toEqual([]);
   });
+
+  it('tokenises and ranks by hits — a multi-word intent surfaces the best match', () => {
+    const idx: GovernanceEntry[] = [
+      {
+        title: '011 the capability practice model',
+        source: 's',
+        path: 'governance/adrs/011-the-capability-practice-model.md',
+        kind: 'ADR',
+      },
+      {
+        title: 'addressability',
+        source: 's',
+        path: 'corpus/practices/addressability.md',
+        kind: 'practice',
+      },
+    ];
+    expect(filterGovernance(idx, 'capability practice model standard')[0].title).toBe(
+      '011 the capability practice model'
+    );
+    expect(filterGovernance(idx, 'capability').map((e) => e.title)).toEqual([
+      '011 the capability practice model',
+    ]);
+  });
 });
 
 describe('loadGovernanceIndex', () => {
@@ -72,5 +95,62 @@ describe('loadGovernanceIndex', () => {
     vi.mocked(pickSourceAdapter).mockRejectedValue(new Error('no token'));
     const index = await loadGovernanceIndex(manifest);
     expect(index.map((e) => e.title)).toEqual(['glossary', 'start here']);
+  });
+
+  it('indexes declared governance sources alongside the record, deriving kind', async () => {
+    vi.mocked(pickSourceAdapter).mockResolvedValue({
+      listFiles: async (_e: unknown, _s: unknown, prefix: string) => {
+        if (prefix === 'governance/adrs')
+          return [
+            {
+              name: '011-the-capability-practice-model.md',
+              type: 'file',
+              path: 'governance/adrs/011-the-capability-practice-model.md',
+              sha: '',
+            },
+            {
+              name: 'README.md',
+              type: 'file',
+              path: 'governance/adrs/README.md',
+              sha: '',
+            },
+            {
+              name: 'notes.txt',
+              type: 'file',
+              path: 'governance/adrs/notes.txt',
+              sha: '',
+            },
+          ];
+        if (prefix === 'corpus/practices')
+          return [
+            {
+              name: 'addressability.md',
+              type: 'file',
+              path: 'corpus/practices/addressability.md',
+              sha: '',
+            },
+          ];
+        return []; // the Notion ADRs DB (prefix '') is empty here
+      },
+    } as never);
+    const m: AigencyManifest = {
+      notion: { databases: { adrs: 'adrs-id' }, pages: {} },
+      governance: [
+        {
+          source: 'https://github.com/verevoir/aigency-guardrails',
+          paths: ['governance/adrs', 'governance/principles.md', 'corpus/practices'],
+        },
+      ],
+    };
+    const index = await loadGovernanceIndex(m);
+    const byTitle = Object.fromEntries(index.map((e) => [e.title, e]));
+    // directory .md files listed; kind read off the path; non-.md skipped
+    expect(byTitle['011 the capability practice model']?.kind).toBe('ADR');
+    expect(byTitle['addressability']?.kind).toBe('practice');
+    expect(index.some((e) => e.path.endsWith('notes.txt'))).toBe(false);
+    // a single `.md` path is indexed directly, without a listing
+    expect(byTitle['principles']?.kind).toBe('principle');
+    // a README is titled by its folder, not a bare "readme"
+    expect(byTitle['adrs — overview']?.kind).toBe('ADR');
   });
 });

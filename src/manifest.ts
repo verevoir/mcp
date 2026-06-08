@@ -5,12 +5,25 @@ import { resolve } from 'node:path';
  * the project's git presence that points at where the project record actually
  * lives (Notion). We read only the fields we compose into doctrine; unknown
  * fields are ignored so the manifest can grow without breaking the server. */
+/** A governance source the find_governance index spans alongside the Notion
+ * record — e.g. the guardrails corpus repo. Each path is either a directory
+ * (whose `.md` files are listed) or a single `.md` file within the source;
+ * every entry is read back the same way via read_file. Governance comes from
+ * more than one source the way code does (filesystem or GitHub) — they index
+ * together. */
+export interface GovernanceSource {
+  source: string;
+  paths: string[];
+}
+
 export interface AigencyManifest {
   notion?: {
     workspaceRootPageId?: string;
     databases?: Record<string, string>;
     pages?: Record<string, string>;
   };
+  /** Extra governance sources indexed by find_governance alongside the record. */
+  governance?: GovernanceSource[];
 }
 
 /** Resolve where to read the manifest from, per ADR 023: an explicit
