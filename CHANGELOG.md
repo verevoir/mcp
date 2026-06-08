@@ -2,7 +2,7 @@
 
 ## 0.17.0 — 2026-06-08
 
-**Multi-language code graph** (STDIO-313). Bumps `@verevoir/context` to `^0.11.0` and adds the tree-sitter grammars for **Python, Java, C#, Go, Scala, C and C++** as direct dependencies, so `find_symbol` and `code_graph` work across those languages, not just TypeScript/TSX/JavaScript. The grammars are *optional peer deps* of `@verevoir/context`, so the MCP server — the package that actually loads them at runtime — must depend on them itself. Pinned to versions that peer `tree-sitter` ^0.21 (c/cpp exact at 0.23.2) so the install resolves under a strict CI resolve, no `--legacy-peer-deps`. No code change — `graph.ts` / `tools/source.ts` already call the language-agnostic API. Kotlin deferred (STDIO-316).
+**Multi-language code graph** (STDIO-313). Bumps `@verevoir/context` to `^0.11.0` and adds the tree-sitter grammars for **Python, Java, C#, Go, Scala, C and C++** as direct dependencies, so `find_symbol` and `code_graph` work across those languages, not just TypeScript/TSX/JavaScript. The grammars are _optional peer deps_ of `@verevoir/context`, so the MCP server — the package that actually loads them at runtime — must depend on them itself. Pinned to versions that peer `tree-sitter` ^0.21 (c/cpp exact at 0.23.2) so the install resolves under a strict CI resolve, no `--legacy-peer-deps`. No code change — `graph.ts` / `tools/source.ts` already call the language-agnostic API. Kotlin deferred (STDIO-316).
 
 ## 0.13.0 — 2026-06-04
 
