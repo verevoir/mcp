@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.0 — 2026-06-08
+
+**Readable tool output** (STDIO-315). Tool results now render through a shared `jsonText` helper that pretty-prints structured data and expands escaped control sequences (`\n`, `\t`, `\"`) — so multi-line string fields (file content, card bodies, diffs, commit messages) show as real newlines and quotes for the consumer (the LLM, and the human watching) instead of the literal `\n` / `\"` that `JSON.stringify` emits. All `source` + `workflow` tool results route through it. Output favours readability over round-trippable JSON; its only consumer reads it, it isn't re-parsed.
+
 ## 0.17.1 — 2026-06-08
 
 **Fix: large files no longer crash `find_symbol` / `code_graph`** (STDIO-313). Picks up `@verevoir/context` 0.11.1: tree-sitter's `parse` threw `Invalid argument` for any source over ~32KB (common in real repos / vendored deps) and that crashed the whole symbol/graph search; the buffer is now sized to the source and a single file's parse failure degrades to empty. No code change here — dependency bump only. Verified end-to-end against the cpu8 kata (find_symbol resolves `KataApi` in all 3 defining files, no crash).

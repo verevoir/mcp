@@ -6,6 +6,7 @@ import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 import { applyEdit } from '../edit.js';
 import { invalidateWrittenFile } from '../cache.js';
 import { queryCodeGraph } from '../graph.js';
+import { jsonText } from '../result.js';
 
 export function registerSourceTools(server: McpServer): void {
   // -------------------------------------------------------------------------
@@ -30,7 +31,7 @@ export function registerSourceTools(server: McpServer): void {
       const adapter = wrapWithCache(await pickSourceAdapter(sourceUrl));
       const env = resolveSourceEnv(sourceUrl);
       const result = await adapter.readFile(env, sourceUrl, path, ref);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -56,7 +57,7 @@ export function registerSourceTools(server: McpServer): void {
       const adapter = await pickSourceAdapter(sourceUrl);
       const env = resolveSourceEnv(sourceUrl);
       const result = await adapter.listFiles(env, sourceUrl, prefix ?? '', ref);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -81,7 +82,7 @@ export function registerSourceTools(server: McpServer): void {
       const adapter = await pickSourceAdapter(sourceUrl);
       const env = resolveSourceEnv(sourceUrl);
       const result = await adapter.getRepoTree(env, sourceUrl, ref);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -118,7 +119,7 @@ export function registerSourceTools(server: McpServer): void {
         ignoreCase,
         maxResults,
       });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -158,7 +159,7 @@ export function registerSourceTools(server: McpServer): void {
       });
       const filtered = kind ? hits.filter((h) => h.kind === kind) : hits;
       return {
-        content: [{ type: 'text', text: JSON.stringify(filtered) }],
+        content: [{ type: 'text', text: jsonText(filtered) }],
       };
     }
   );
@@ -192,7 +193,7 @@ export function registerSourceTools(server: McpServer): void {
       const env = resolveSourceEnv(sourceUrl);
       await adapter.writeFile(env, sourceUrl, path, content, branch, commitMessage);
       invalidateWrittenFile(sourceUrl, path, branch);
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
+      return { content: [{ type: 'text', text: jsonText({ ok: true }) }] };
     }
   );
 
@@ -236,7 +237,7 @@ export function registerSourceTools(server: McpServer): void {
       invalidateWrittenFile(sourceUrl, path, branch);
       return {
         content: [
-          { type: 'text', text: JSON.stringify({ ok: true, replacements: result.replacements }) },
+          { type: 'text', text: jsonText({ ok: true, replacements: result.replacements }) },
         ],
       };
     }

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CardCreate, CardPatch } from '@verevoir/workflows';
 import { pickWorkflowAdapter, resolveWorkflowEnv } from '../router.js';
+import { jsonText } from '../result.js';
 
 /** Drop keys whose value is `undefined` so a partial update carries only
  * the fields the caller actually supplied — `{ title }`, not
@@ -35,7 +36,7 @@ export function registerWorkflowTools(server: McpServer): void {
       const adapter = await pickWorkflowAdapter(boardUrl);
       const env = resolveWorkflowEnv(boardUrl);
       const result = await adapter.listColumns(env, boardUrl);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -81,7 +82,7 @@ export function registerWorkflowTools(server: McpServer): void {
         limit,
       };
       const result = await adapter.listCards(env, boardUrl, filter);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -105,7 +106,7 @@ export function registerWorkflowTools(server: McpServer): void {
       const adapter = await pickWorkflowAdapter(boardUrl);
       const env = resolveWorkflowEnv(boardUrl);
       const result = await adapter.getCard(env, boardUrl, cardId);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -134,7 +135,7 @@ export function registerWorkflowTools(server: McpServer): void {
       const env = resolveWorkflowEnv(boardUrl);
       const fields: CardCreate = { title, body, labelIds, dueDate };
       const result = await adapter.createCard(env, boardUrl, columnId, fields);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -174,7 +175,7 @@ export function registerWorkflowTools(server: McpServer): void {
       const patch = definedOnly<CardPatch>({ title, body, columnId, labelIds, dueDate });
       await adapter.updateCard(env, boardUrl, cardId, patch);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
+        content: [{ type: 'text', text: jsonText({ ok: true }) }],
       };
     }
   );
@@ -202,7 +203,7 @@ export function registerWorkflowTools(server: McpServer): void {
       const env = resolveWorkflowEnv(boardUrl);
       await adapter.moveCard(env, boardUrl, cardId, toColumnId);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
+        content: [{ type: 'text', text: jsonText({ ok: true }) }],
       };
     }
   );
@@ -228,7 +229,7 @@ export function registerWorkflowTools(server: McpServer): void {
       const adapter = await pickWorkflowAdapter(boardUrl);
       const env = resolveWorkflowEnv(boardUrl);
       const result = await adapter.listComments(env, boardUrl, cardId);
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: jsonText(result) }] };
     }
   );
 
@@ -254,7 +255,7 @@ export function registerWorkflowTools(server: McpServer): void {
       const env = resolveWorkflowEnv(boardUrl);
       await adapter.addComment(env, boardUrl, cardId, body);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
+        content: [{ type: 'text', text: jsonText({ ok: true }) }],
       };
     }
   );
