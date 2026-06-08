@@ -5,6 +5,7 @@ import { findSymbols } from '@verevoir/context/code';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 import { applyEdit } from '../edit.js';
 import { invalidateWrittenFile } from '../cache.js';
+import { queryCodeGraph } from '../graph.js';
 
 export function registerSourceTools(server: McpServer): void {
   // -------------------------------------------------------------------------
@@ -238,6 +239,38 @@ export function registerSourceTools(server: McpServer): void {
           { type: 'text', text: JSON.stringify({ ok: true, replacements: result.replacements }) },
         ],
       };
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // code_graph
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    'code_graph',
+    {
+      description:
+        "Return a symbol's neighbourhood in the code graph: where it's defined, what calls it, what it calls (resolved to symbols defined in this source), and which files import it — the relationships you can't get by reading a single file. Use it for 'who uses X' / 'what does X depend on' / 'what would changing X affect' without reading the tree. Approximate: edges are name-based (no type resolution), so a common name may have several definitions.",
+      inputSchema: {
+        sourceUrl: z
+          .string()
+          .describe(
+            'Source, auto-routed by form: local path (/abs/path or file://...), GitHub repo (https://github.com/owner/repo), or Notion (https://www.notion.so/<id>).'
+          ),
+        symbol: z.string().describe('Symbol name to look up in the code graph.'),
+        ref: z
+          .string()
+          .optional()
+          .describe(
+            'Git ref / branch / sha that scopes the cache lookup. Omit for default branch.'
+          ),
+      },
+    },
+    async ({ sourceUrl, symbol, ref }) => {
+      const adapter = await pickSourceAdapter(sourceUrl);
+      const env = resolveSourceEnv(sourceUrl);
+      await warmSource(adapter, env, sourceUrl, { ref });
+      const text = queryCodeGraph(sourceUrl, ref ?? '', symbol);
+      return { content: [{ type: 'text', text }] };
     }
   );
 }
