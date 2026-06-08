@@ -9,6 +9,7 @@ vi.mock('../src/router.js', () => ({
 import {
   loadGovernanceIndex,
   filterGovernance,
+  resolveGovernanceSource,
   type GovernanceEntry,
 } from '../src/tools/governance.js';
 import { pickSourceAdapter } from '../src/router.js';
@@ -67,6 +68,24 @@ describe('filterGovernance', () => {
     expect(filterGovernance(idx, 'capability').map((e) => e.title)).toEqual([
       '011 the capability practice model',
     ]);
+  });
+});
+
+describe('resolveGovernanceSource', () => {
+  it('passes URLs and absolute paths through unchanged', () => {
+    expect(resolveGovernanceSource('https://github.com/o/r', '/proj')).toBe(
+      'https://github.com/o/r'
+    );
+    expect(resolveGovernanceSource('https://www.notion.so/abc', '/proj')).toBe(
+      'https://www.notion.so/abc'
+    );
+    expect(resolveGovernanceSource('/abs/clone', '/proj')).toBe('/abs/clone');
+  });
+
+  it('resolves a relative source against the manifest directory', () => {
+    expect(resolveGovernanceSource('projects/aigency-guardrails', '/home/proj')).toBe(
+      '/home/proj/projects/aigency-guardrails'
+    );
   });
 });
 
