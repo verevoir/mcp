@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.0 — 2026-06-08
+
+**Multi-language code graph** (STDIO-313). Bumps `@verevoir/context` to `^0.11.0` and adds the tree-sitter grammars for **Python, Java, C#, Go, Scala, C and C++** as direct dependencies, so `find_symbol` and `code_graph` work across those languages, not just TypeScript/TSX/JavaScript. The grammars are _optional peer deps_ of `@verevoir/context`, so the MCP server — the package that actually loads them at runtime — must depend on them itself. Pinned to versions that peer `tree-sitter` ^0.21 (c/cpp exact at 0.23.2) so the install resolves under a strict CI resolve, no `--legacy-peer-deps`. No code change — `graph.ts` / `tools/source.ts` already call the language-agnostic API. Kotlin deferred (STDIO-316).
+
 ## 0.13.0 — 2026-06-04
 
 **Skill parsing moves to `@verevoir/recipes`** (STDIO-278). The inline recipe parser added in 0.12.0 is replaced by a dependency on the new public `@verevoir/recipes` library, so the format definition is shared with the aigency web app rather than ported. No behaviour change — the same descriptors parse the same way and register as the same prompts. Removes `src/skills.ts` and its unit tests (now covered in the library). `tools/skills.ts` imports `parseSkill` / `isReasoningSkill` / `renderSkillPrompt` from `@verevoir/recipes`.
