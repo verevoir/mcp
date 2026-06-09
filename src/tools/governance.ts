@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { isAbsolute, dirname, resolve as resolvePath } from 'node:path';
 import { wrapWithCache } from '@verevoir/context';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
-import { loadManifest, type AigencyManifest } from '../manifest.js';
+import { loadManifest, manifestPath, type AigencyManifest } from '../manifest.js';
 
 // Surface the project's governance — its ADRs and living model docs, the named
 // key pages, AND the framework governance that lives in the corpus repo (the
@@ -86,6 +87,19 @@ async function indexGovernanceSource(source: string, paths: string[]): Promise<G
   return out;
 }
 
+/** Resolve a governance source to a form the adapter accepts. A URL (github /
+ * notion / file://) or an absolute path passes through unchanged; a bare
+ * relative path is resolved against the manifest's own directory — so a
+ * committed manifest can point at a sibling clone ("projects/aigency-guardrails")
+ * portably, with no hard-coded machine path, and the router (which rejects bare
+ * relative paths) is handed an absolute one. */
+export function resolveGovernanceSource(source: string, manifestDir: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(source) || isAbsolute(source)) {
+    return source;
+  }
+  return resolvePath(manifestDir, source);
+}
+
 /** Build the governance index across every source: the Notion project record
  * (ADRs database + named key pages) and each declared governance source (the
  * guardrails corpus — ADRs, principles, glossary, practices). Returns [] when
@@ -132,9 +146,12 @@ export async function loadGovernanceIndex(
 
   // Source 2+ — declared governance sources (the guardrails corpus), indexed
   // together with the record so the framework's ADRs and practices are found
-  // by the same scan.
+  // by the same scan. A relative source resolves against the manifest's own
+  // directory, so the committed manifest can point at a sibling clone.
+  const manifestDir = dirname(manifestPath());
   for (const gov of manifest.governance ?? []) {
-    entries.push(...(await indexGovernanceSource(gov.source, gov.paths)));
+    const source = resolveGovernanceSource(gov.source, manifestDir);
+    entries.push(...(await indexGovernanceSource(source, gov.paths)));
   }
 
   return entries;
