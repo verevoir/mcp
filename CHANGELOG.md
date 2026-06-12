@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.0 — 2026-06-12
+
+**New: `provision` tool — "consult the bar" as one triggered hop** (STDIO-326). The diagnostic: a floor model coding through the MCP never consults governance — not because it can't see `find_governance`, but because a weak model won't run a multi-call scavenger hunt (find the index → read each file) unprompted. `provision({ prose })` collapses that to one call that returns the **practices the work is held to as text**: the foundational floor always (no model call), plus concern-specific practices when `ANTHROPIC_API_KEY` is set (one reasoning classification via `@verevoir/recipes` → `@verevoir/llm`). Practice bodies are read from the guardrails corpus (`AIGENCY_GUARDRAILS_URL` override). It degrades rather than erroring — an unreadable source or a failed tagging call falls back to ids / the floor.
+
+- **`instructions.md` now triggers it.** A new "Before you change code, consult the bar" step makes calling `provision` a precondition for changing code — the trigger a weak model lacked — and tells the coordinator to pass the returned frame into any worker it spawns (a floor sub-agent can't be hooked; the bar has to travel in its prompt).
+- Adds `@anthropic-ai/sdk` as a dependency (peer of `@verevoir/llm`, which `@verevoir/recipes` pulls) for the concern-tagging call.
+- The capability axis (prose→capabilities via the embedding bin) is intentionally not here — it pulls a heavy local embedder, a separate placement decision.
+
 ## 0.18.0 — 2026-06-08
 
 **Readable tool output** (STDIO-315). Tool results now render through a shared `jsonText` helper that pretty-prints structured data and expands escaped control sequences (`\n`, `\t`, `\"`) — so multi-line string fields (file content, card bodies, diffs, commit messages) show as real newlines and quotes for the consumer (the LLM, and the human watching) instead of the literal `\n` / `\"` that `JSON.stringify` emits. All `source` + `workflow` tool results route through it. Output favours readability over round-trippable JSON; its only consumer reads it, it isn't re-parsed.

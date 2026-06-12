@@ -5,6 +5,10 @@ Verevoir is the front door for reading and writing files, code, and project cont
 - **Writes — always through the MCP.** Make every change to a covered `sourceUrl` / `boardUrl` with `write_file` / `edit_file` (or the card tools). A write that goes around them — shell redirection, `sed -i`, or the built-in Edit/Write on a covered path — leaves the shared cache stale and _wrong_ for the rest of the session, so later reads and searches serve pre-write content. This is the firm rule: never edit a covered file out-of-band.
 - **Reads — prefer the MCP.** Use `read_file` / `grep` / `find_symbol` over the built-in Read / `cat` / shell `grep` / `find` / `ls`. A bypassed read is less costly than a bypassed write — it only misses the cache + index benefit (slower, duplicate fetches, no Notion) rather than corrupting state — but the MCP is still the default whenever a `sourceUrl` fits.
 
+## Before you change code, consult the bar
+
+Before you implement, write, or change code, call **`provision`** with a short description of the work. It returns the **practices your output is held to** — in one call, as text, not an index to chase. Treat this as a precondition for the change, the same way writing through the MCP is: skip it and your code is judged against standards you never read. If you hand the work to another model (a cheaper worker you spawn), pass the returned frame in its prompt — a floor worker won't fetch the bar itself, so the practices must travel with the task. (`find_governance` is still there for browsing the wider record; `provision` is the triggered shortcut for "what am I held to for _this_.")
+
 ## One surface, auto-routed by URL
 
 The same tools work uniformly across:

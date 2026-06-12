@@ -152,6 +152,17 @@ All take a `boardUrl`:
 | `list_comments` | `{ boardUrl, cardId }`                                                | `Comment[]`    |
 | `add_comment`   | `{ boardUrl, cardId, body }`                                          | `{ ok: true }` |
 
+### Governance tools
+
+Surface the project's governance — the ADRs / principles / glossary in the project record, and the **practices** (quality standards) in the guardrails corpus.
+
+| Tool              | Args         | Returns                                                                                     |
+| ----------------- | ------------ | ------------------------------------------------------------------------------------------- |
+| `find_governance` | `{ query? }` | A scannable, narrowable index of governance entries (title + how to `read_file` each).      |
+| `provision`       | `{ prose }`  | The **practices a piece of work is held to**, as text in one call (floor + concern-tagged). |
+
+`provision` reads practice bodies from the guardrails corpus (override the source with `AIGENCY_GUARDRAILS_URL`). It always returns the foundational floor with no model call; when `ANTHROPIC_API_KEY` is set it adds concern-specific practices via one reasoning classification of the prose. Both degrade gracefully — an unreadable source or a failed tagging call falls back rather than erroring.
+
 ## What this is NOT
 
 - Not a sync engine. Each tool is one operation; cross-backend mirroring lives elsewhere.
