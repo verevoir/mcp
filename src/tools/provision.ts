@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { FOUNDATIONAL, provisionPractices } from '@verevoir/recipes/engine';
+import { parseCapability, type CapabilityDescriptor } from '@verevoir/recipes';
+import { FOUNDATIONAL, provisionPractices, buildCapabilityIndex } from '@verevoir/recipes/engine';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
+import { fetchEmbedder } from '../embedder.js';
 
 // PROVISION — "consult the bar before you write code", as one hop (STDIO-326).
 //
@@ -118,6 +120,122 @@ export function renderFrame(loaded: LoadedPractice[], ids: string[], note: strin
   return `${header}\n\n${blocks}${tail}`;
 }
 
+// ── Capability axis (STDIO-339) ─────────────────────────────────────────────
+// Surface the pre-built procedures (capabilities) that may fit the work, from
+// the embedding bin. Advisory + generous: the top matches, the model picks.
+// EMBEDDING-ONLY — no reasoning / narrowing call here, so it's provider-agnostic
+// on the reasoning front; it needs only the (configurable, OpenAI-compatible)
+// embeddings endpoint. Omitted entirely when no embeddings key is configured.
+
+const CAPABILITIES_DIRS = ['corpus/capabilities', 'capabilities'];
+
+// The bin is high-recall; for an advisory surface a tight set reads better than
+// the full DEFAULT_K.
+const CAPABILITY_SURFACE_K = 8;
+
+/** A capability surfaced in the frame. */
+export interface SurfacedCapability {
+  type: string;
+  summary: string;
+}
+
+let corpusMemo: CapabilityDescriptor[] | null = null;
+
+/** Test seam: drop the in-process capability corpus memo. */
+export function clearCapabilityCorpusMemo(): void {
+  corpusMemo = null;
+}
+
+/** Recursively load + parse capability descriptors under a corpus dir. A
+ * malformed descriptor is skipped; subfolders (e.g. `provisioning/`) are walked
+ * so grouping doesn't affect loading. */
+async function loadCapabilityDir(
+  adapter: Awaited<ReturnType<typeof pickSourceAdapter>>,
+  env: ReturnType<typeof resolveSourceEnv>,
+  sourceUrl: string,
+  dir: string
+): Promise<CapabilityDescriptor[]> {
+  let entries;
+  try {
+    entries = await adapter.listFiles(env, sourceUrl, dir);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(entries)) return [];
+  const out: CapabilityDescriptor[] = [];
+  for (const e of entries) {
+    if (e.type === 'file' && e.name.endsWith('.md')) {
+      const idHint = e.name.replace(/\.md$/, '');
+      try {
+        const { content } = await adapter.readFile(env, sourceUrl, e.path);
+        out.push(parseCapability(idHint, content));
+      } catch {
+        // skip a malformed / unreadable descriptor — one bad capability
+        // shouldn't disarm the rest.
+      }
+    } else if (e.type === 'dir') {
+      out.push(...(await loadCapabilityDir(adapter, env, sourceUrl, e.path)));
+    }
+  }
+  return out;
+}
+
+/** Load the capability corpus from the guardrails source (memoised for the
+ * process). Tries the `corpus/` layout then legacy; `[]` when unreadable. */
+export async function loadCapabilityCorpus(
+  sourceUrl: string = guardrailsUrl()
+): Promise<CapabilityDescriptor[]> {
+  if (corpusMemo) return corpusMemo;
+  let adapter: Awaited<ReturnType<typeof pickSourceAdapter>>;
+  let env: ReturnType<typeof resolveSourceEnv>;
+  try {
+    adapter = await pickSourceAdapter(sourceUrl);
+    env = resolveSourceEnv(sourceUrl);
+  } catch {
+    return [];
+  }
+  for (const dir of CAPABILITIES_DIRS) {
+    const caps = await loadCapabilityDir(adapter, env, sourceUrl, dir);
+    if (caps.length > 0) {
+      corpusMemo = caps;
+      return caps;
+    }
+  }
+  return [];
+}
+
+/** Retrieve the capabilities that may fit the work via the embedding bin, or
+ * `null` when no embeddings endpoint is configured (capability surfacing is
+ * then simply omitted — practices still return). `[]` when the corpus is
+ * empty/unreadable. */
+export async function retrieveCapabilities(
+  prose: string,
+  k: number = CAPABILITY_SURFACE_K
+): Promise<SurfacedCapability[] | null> {
+  const embedder = fetchEmbedder();
+  if (!embedder) return null;
+  const corpus = await loadCapabilityCorpus();
+  if (corpus.length === 0) return [];
+  const byType = new Map(corpus.map((c) => [c.type, c]));
+  const index = await buildCapabilityIndex(corpus, embedder);
+  const hits = await index.retrieve(prose, k);
+  return hits.map((h) => {
+    const c = byType.get(h.type);
+    return { type: h.type, summary: c?.description ?? c?.postcondition ?? '' };
+  });
+}
+
+/** Render the advisory capability section, or `null` to omit it (no endpoint
+ * configured, or nothing matched). */
+export function renderCapabilities(caps: SurfacedCapability[] | null): string | null {
+  if (!caps || caps.length === 0) return null;
+  const lines = caps.map((c) => `- **${c.type}** — ${c.summary}`);
+  return (
+    `Capabilities that may fit this work (advisory — pre-built procedures you can run; ` +
+    `ignore any that don't apply):\n${lines.join('\n')}`
+  );
+}
+
 /** Provision the practice frame for a piece of work. FOUNDATIONAL floor always;
  * concern-tagged practices too when an ANTHROPIC_API_KEY is set (one reasoning
  * call). A failed tagging call degrades to the floor rather than erroring —
@@ -139,7 +257,11 @@ export async function provisionFrame(prose: string): Promise<string> {
     note = 'foundational floor only — set ANTHROPIC_API_KEY to add concern-specific practices';
   }
   const loaded = await loadPracticeBodies(ids);
-  return renderFrame(loaded, ids, note);
+  const practicesText = renderFrame(loaded, ids, note);
+  // Advisory capability surfacing (embedding-only; omitted when no embeddings
+  // endpoint is configured, and never allowed to block the practices).
+  const capsText = renderCapabilities(await retrieveCapabilities(prose).catch(() => null));
+  return capsText ? `${capsText}\n\n===\n\n${practicesText}` : practicesText;
 }
 
 /** Register the `provision` tool — the triggered, one-hop "consult the bar"
@@ -149,7 +271,7 @@ export function registerProvisionTool(server: McpServer): void {
     'provision',
     {
       description:
-        "Before you implement or change code, call `provision` with a short description of the work you're about to do. It returns the **practices your output is held to** as text in one call — a foundational floor always, plus concern-specific practices tagged for this work — so you don't have to hunt the governance index. If you delegate the work to another (especially a cheaper) model, pass the returned frame in that worker's prompt: a floor worker won't fetch the bar itself, so the practices must travel with the task.",
+        "Before you implement or change code, call `provision` with a short description of the work you're about to do. It returns, in one call: the **practices your output is held to** as text (a foundational floor always, plus concern-specific practices tagged for this work), and — when an embeddings endpoint is configured — any **pre-built capabilities that may fit** the work (advisory; run them or ignore them). So you don't have to hunt the governance index. If you delegate the work to another (especially a cheaper) model, pass the returned frame in that worker's prompt: a floor worker won't fetch the bar itself, so it must travel with the task.",
       inputSchema: {
         prose: z
           .string()

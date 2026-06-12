@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.0 — 2026-06-12
+
+**`provision` gains the capability axis — light, provider-agnostic** (STDIO-339). The tool now also surfaces the **pre-built capabilities** that may fit the work, alongside the practices, in the same call. So `provision` answers both halves: _what you can run_ and _what you're held to_.
+
+- **Retrieval is the embedding bin** (`@verevoir/recipes` `buildCapabilityIndex`) over the guardrails `corpus/capabilities`, top-K, advisory — the model picks or ignores. **Embedding-only: no reasoning/narrowing call**, so it's provider-agnostic on the reasoning front.
+- **Zero new dependency.** The embedder is a hosted **OpenAI-compatible `/embeddings`** call over plain `fetch` (global in Node ≥20) — no onnxruntime, no SDK. Configure `AIGENCY_EMBEDDINGS_URL` / `AIGENCY_EMBEDDINGS_API_KEY` (falls back to `OPENAI_API_KEY`) / `AIGENCY_EMBEDDINGS_MODEL` (default `text-embedding-3-small`). Point it at OpenAI, Mistral, DeepSeek, Voyage, or any compatible endpoint. Corpus vectors are embedded once and cached by recipes; per call it's one short query embed.
+- **Degrades cleanly:** no embeddings endpoint configured → the capability section is simply omitted and practices still return; a retrieval error never blocks the practices. The heavier local embedder (onnxruntime) can be swapped in behind the same seam if offline retrieval is ever needed.
+
 ## 0.19.0 — 2026-06-12
 
 **New: `provision` tool — "consult the bar" as one triggered hop** (STDIO-326). The diagnostic: a floor model coding through the MCP never consults governance — not because it can't see `find_governance`, but because a weak model won't run a multi-call scavenger hunt (find the index → read each file) unprompted. `provision({ prose })` collapses that to one call that returns the **practices the work is held to as text**: the foundational floor always (no model call), plus concern-specific practices when `ANTHROPIC_API_KEY` is set (one reasoning classification via `@verevoir/recipes` → `@verevoir/llm`). Practice bodies are read from the guardrails corpus (`AIGENCY_GUARDRAILS_URL` override). It degrades rather than erroring — an unreadable source or a failed tagging call falls back to ids / the floor.
