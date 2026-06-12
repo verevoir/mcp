@@ -4,6 +4,7 @@ import { registerWorkflowTools } from './tools/workflow.js';
 import { registerSkillPrompts } from './tools/skills.js';
 import { registerGovernanceTool } from './tools/governance.js';
 import { registerProvisionTool } from './tools/provision.js';
+import { registerDelegateTool } from './tools/delegate.js';
 import { loadInstructions } from './instructions.js';
 import { loadManifest, composeInstructions } from './manifest.js';
 
@@ -34,6 +35,10 @@ export async function createServer(): Promise<McpServer> {
   // piece of work is held to as text (foundational floor + concern-tagged), so
   // a weak model gets the bar in one call and can hand it to a worker it spawns.
   registerProvisionTool(server);
+  // The coordinator→worker connector: hand a self-contained sub-task to a
+  // configured worker model (local Ollama/LM Studio, or any OpenAI-compatible
+  // endpoint) and return its result.
+  registerDelegateTool(server);
   // Best-effort: registers the guardrails reasoning skills as prompts. A load
   // failure (no token, source unreachable) leaves the server running with its
   // tools and no skill prompts rather than failing to start.

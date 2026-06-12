@@ -168,6 +168,10 @@ Surface the project's governance — the ADRs / principles / glossary in the pro
 
 Both halves degrade gracefully — an unreadable source, a failed tagging call, or a retrieval error falls back rather than erroring.
 
+### Delegation
+
+`delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured out-of-band, per project** (not on this surface); with no worker configured the tool returns a short notice rather than erroring.
+
 ## What this is NOT
 
 - Not a sync engine. Each tool is one operation; cross-backend mirroring lives elsewhere.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.0 — 2026-06-12
+
+**New: `delegate` tool — the coordinator→worker connector** (STDIO-345). `delegate({ prompt })` hands a self-contained sub-task to this project's configured **worker model** (any OpenAI-compatible chat endpoint) and returns its result — so the model you're talking to can offload bounded work to a cheaper worker. The prompt is self-contained: the worker sees only it, not the conversation.
+
+- **Zero new dependency** — a plain `fetch` POST to the worker's `/chat/completions` (fetch is global in Node ≥20). Optional `system` and per-call `model` overrides.
+- **Never throws** — a missing or unreachable worker returns a short, actionable notice, so the coordinator can relay or repair rather than crash.
+- Worker configuration is **project-specific and out-of-band** — not documented on this public surface.
+
 ## 0.20.0 — 2026-06-12
 
 **`provision` gains the capability axis — light, provider-agnostic** (STDIO-339). The tool now also surfaces the **pre-built capabilities** that may fit the work, alongside the practices, in the same call. So `provision` answers both halves: _what you can run_ and _what you're held to_.
