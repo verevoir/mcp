@@ -170,7 +170,7 @@ Both halves degrade gracefully — an unreadable source, a failed tagging call, 
 
 ### Delegation
 
-`delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured out-of-band, per project** (not on this surface); with no worker configured the tool returns a short notice rather than erroring.
+`delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured per project** (env); with no worker configured the tool returns a short notice rather than erroring.
 
 ## What this is NOT
 

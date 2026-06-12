@@ -6,7 +6,7 @@
 
 - **Zero new dependency** — a plain `fetch` POST to the worker's `/chat/completions` (fetch is global in Node ≥20). Optional `system` and per-call `model` overrides.
 - **Never throws** — a missing or unreachable worker returns a short, actionable notice, so the coordinator can relay or repair rather than crash.
-- Worker configuration is **project-specific and out-of-band** — not documented on this public surface.
+- Worker configuration is **project-specific** (env).
 
 ## 0.20.0 — 2026-06-12
 

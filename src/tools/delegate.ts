@@ -32,9 +32,8 @@ export function workerConfig(): WorkerConfig {
   };
 }
 
-// Deliberately terse: the worker *configuration* is project-specific and lives
-// out-of-band (private setup), not on this public surface. The operator who
-// configured the project has the recipe; this message only signals the state.
+// Worker configuration is project-specific (env); this message just signals the
+// unconfigured state.
 const NOT_CONFIGURED = "No worker model is configured for this project's MCP.";
 
 /** Run a prompt on the configured worker model via its OpenAI-compatible
@@ -89,7 +88,7 @@ export function registerDelegateTool(server: McpServer): void {
     'delegate',
     {
       description:
-        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. Returns the worker's text, or a short notice if no worker is configured for this project. (Worker setup is configured out-of-band per project.)",
+        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. Returns the worker's text, or a short notice if no worker is configured for this project.",
       inputSchema: {
         prompt: z
           .string()
