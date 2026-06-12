@@ -39,6 +39,10 @@ beforeEach(() => {
   vi.mocked(pickSourceAdapter).mockReset();
   vi.mocked(provisionPractices).mockReset();
   delete process.env.ANTHROPIC_API_KEY;
+  // These tests exercise the practice axis only — keep the capability axis off
+  // (no embeddings endpoint) so the frame is deterministic regardless of env.
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.AIGENCY_EMBEDDINGS_API_KEY;
 });
 
 afterEach(() => {

@@ -156,12 +156,17 @@ All take a `boardUrl`:
 
 Surface the project's governance — the ADRs / principles / glossary in the project record, and the **practices** (quality standards) in the guardrails corpus.
 
-| Tool              | Args         | Returns                                                                                     |
-| ----------------- | ------------ | ------------------------------------------------------------------------------------------- |
-| `find_governance` | `{ query? }` | A scannable, narrowable index of governance entries (title + how to `read_file` each).      |
-| `provision`       | `{ prose }`  | The **practices a piece of work is held to**, as text in one call (floor + concern-tagged). |
+| Tool              | Args         | Returns                                                                                |
+| ----------------- | ------------ | -------------------------------------------------------------------------------------- |
+| `find_governance` | `{ query? }` | A scannable, narrowable index of governance entries (title + how to `read_file` each). |
+| `provision`       | `{ prose }`  | The **practices held to** + the **capabilities that may fit**, in one call.            |
 
-`provision` reads practice bodies from the guardrails corpus (override the source with `AIGENCY_GUARDRAILS_URL`). It always returns the foundational floor with no model call; when `ANTHROPIC_API_KEY` is set it adds concern-specific practices via one reasoning classification of the prose. Both degrade gracefully — an unreadable source or a failed tagging call falls back rather than erroring.
+`provision` reads from the guardrails corpus (override the source with `AIGENCY_GUARDRAILS_URL`).
+
+- **Practices** (the bar): always the foundational floor with no model call; when `ANTHROPIC_API_KEY` is set, concern-specific practices too, via one reasoning classification of the prose.
+- **Capabilities** (pre-built procedures, advisory): retrieved via an embedding bin when an embeddings endpoint is configured — `AIGENCY_EMBEDDINGS_API_KEY` (falls back to `OPENAI_API_KEY`), `AIGENCY_EMBEDDINGS_URL` (default OpenAI; point at any OpenAI-compatible provider — Mistral / DeepSeek / Voyage / …), `AIGENCY_EMBEDDINGS_MODEL` (default `text-embedding-3-small`). No endpoint → the capability section is omitted.
+
+Both halves degrade gracefully — an unreadable source, a failed tagging call, or a retrieval error falls back rather than erroring.
 
 ## What this is NOT
 
