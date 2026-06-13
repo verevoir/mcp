@@ -17,6 +17,22 @@ export function normalizeSourceUrl(sourceUrl: string): string {
   return sourceUrl.startsWith('file://') ? fileURLToPath(sourceUrl) : sourceUrl;
 }
 
+// `branch` + `commitMessage` are needed only for GitHub commits; filesystem and
+// Notion writes ignore them. Validate that here so the tool schemas can mark
+// them OPTIONAL (required-but-ignored was a smell), and coerce to strings for
+// the adapter call. A GitHub source still gets a clear error if they're missing.
+export function commitArgs(
+  sourceUrl: string,
+  branch?: string,
+  commitMessage?: string
+): { branch: string; commitMessage: string } {
+  const isGitHub = /^https?:\/\/(www\.)?github\.com\//i.test(sourceUrl);
+  if (isGitHub && (!branch || !commitMessage)) {
+    throw new Error('branch and commitMessage are required when writing to a GitHub source.');
+  }
+  return { branch: branch ?? '', commitMessage: commitMessage ?? '' };
+}
+
 export function registerSourceTools(server: McpServer): void {
   // -------------------------------------------------------------------------
   // read_file
@@ -181,7 +197,7 @@ export function registerSourceTools(server: McpServer): void {
     'write_file',
     {
       description:
-        "Write a file's full contents to a source. Always prefer this (and edit_file) over the built-in Write or shell redirection for a covered path: it commits the change AND drops the file from the shared read cache so the next grep/find_symbol re-fetches — a write that bypasses the MCP leaves that cache stale and wrong for the rest of the session. GitHub sources commit to the given branch via the contents API; filesystem sources write directly to disk with no git staging (branch + commitMessage ignored). Returns { ok: true }.",
+        "Write a file's full contents to a source. Always prefer this (and edit_file) over the built-in Write or shell redirection for a covered path: it commits the change AND drops the file from the shared read cache so the next grep/find_symbol re-fetches — a write that bypasses the MCP leaves that cache stale and wrong for the rest of the session. GitHub sources commit to the given branch via the contents API (branch + commitMessage required there); filesystem + Notion sources write directly with no git staging, so omit branch + commitMessage. Returns { ok: true }.",
       inputSchema: {
         sourceUrl: z
           .string()
@@ -192,17 +208,24 @@ export function registerSourceTools(server: McpServer): void {
         content: z.string().describe('Full file content to write.'),
         branch: z
           .string()
-          .describe('Branch to commit to (GitHub). Ignored for filesystem sources.'),
+          .optional()
+          .describe(
+            'Branch to commit to. Required for GitHub sources; omit for filesystem + Notion (ignored).'
+          ),
         commitMessage: z
           .string()
-          .describe('Commit message (GitHub). Ignored for filesystem sources.'),
+          .optional()
+          .describe(
+            'Commit message. Required for GitHub sources; omit for filesystem + Notion (ignored).'
+          ),
       },
     },
     async ({ sourceUrl, path, content, branch, commitMessage }) => {
       const adapter = await pickSourceAdapter(sourceUrl);
       const env = resolveSourceEnv(sourceUrl);
-      await adapter.writeFile(env, sourceUrl, path, content, branch, commitMessage);
-      invalidateWrittenFile(sourceUrl, path, branch);
+      const commit = commitArgs(sourceUrl, branch, commitMessage);
+      await adapter.writeFile(env, sourceUrl, path, content, commit.branch, commit.commitMessage);
+      invalidateWrittenFile(sourceUrl, path, commit.branch);
       return { content: [{ type: 'text', text: jsonText({ ok: true }) }] };
     }
   );
@@ -214,7 +237,7 @@ export function registerSourceTools(server: McpServer): void {
     'edit_file',
     {
       description:
-        'Surgically edit a file in any source: replace an exact `oldString` with `newString`. Prefer this over the built-in Edit for a covered path — like write_file it invalidates the shared read cache after writing (a bypassing edit leaves grep/find_symbol serving stale, pre-edit content), and it keeps the whole read->edit->write cycle in-toolchain across local, GitHub, and Notion sources. `oldString` must match exactly once unless `replaceAll` is set — include enough surrounding context to make it unique. GitHub commits to `branch`; filesystem writes directly (branch + commitMessage ignored). Returns { ok: true, replacements }.',
+        'Surgically edit a file in any source: replace an exact `oldString` with `newString`. Prefer this over the built-in Edit for a covered path — like write_file it invalidates the shared read cache after writing (a bypassing edit leaves grep/find_symbol serving stale, pre-edit content), and it keeps the whole read->edit->write cycle in-toolchain across local, GitHub, and Notion sources. `oldString` must match exactly once unless `replaceAll` is set — include enough surrounding context to make it unique. GitHub commits to `branch` (branch + commitMessage required there); filesystem + Notion write directly, so omit branch + commitMessage. Returns { ok: true, replacements }.',
       inputSchema: {
         sourceUrl: z
           .string()
@@ -228,10 +251,16 @@ export function registerSourceTools(server: McpServer): void {
         newString: z.string().describe('Replacement text.'),
         branch: z
           .string()
-          .describe('Branch to commit to (GitHub). Ignored for filesystem sources.'),
+          .optional()
+          .describe(
+            'Branch to commit to. Required for GitHub sources; omit for filesystem + Notion (ignored).'
+          ),
         commitMessage: z
           .string()
-          .describe('Commit message (GitHub). Ignored for filesystem sources.'),
+          .optional()
+          .describe(
+            'Commit message. Required for GitHub sources; omit for filesystem + Notion (ignored).'
+          ),
         replaceAll: z
           .boolean()
           .optional()
@@ -241,10 +270,18 @@ export function registerSourceTools(server: McpServer): void {
     async ({ sourceUrl, path, oldString, newString, branch, commitMessage, replaceAll }) => {
       const adapter = await pickSourceAdapter(sourceUrl);
       const env = resolveSourceEnv(sourceUrl);
-      const { content } = await adapter.readFile(env, sourceUrl, path, branch);
+      const commit = commitArgs(sourceUrl, branch, commitMessage);
+      const { content } = await adapter.readFile(env, sourceUrl, path, commit.branch || undefined);
       const result = applyEdit(content, oldString, newString, replaceAll ?? false);
-      await adapter.writeFile(env, sourceUrl, path, result.content, branch, commitMessage);
-      invalidateWrittenFile(sourceUrl, path, branch);
+      await adapter.writeFile(
+        env,
+        sourceUrl,
+        path,
+        result.content,
+        commit.branch,
+        commit.commitMessage
+      );
+      invalidateWrittenFile(sourceUrl, path, commit.branch);
       return {
         content: [
           { type: 'text', text: jsonText({ ok: true, replacements: result.replacements }) },
