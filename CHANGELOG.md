@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.22.0 — 2026-06-13
+
+**`find_symbol` / `code_graph` now work with a `file://` URL** (STDIO-317). A `file://` source warmed the cache under one key and was queried under another, so it returned **0 hits** (a bare absolute path worked). Both handlers now normalise `file://` to the bare path before warming + querying, so the two halves share one key. Verified end-to-end: `file://` and the bare path return identical results.
+
 ## 0.21.0 — 2026-06-12
 
 **New: `delegate` tool — the coordinator→worker connector** (STDIO-345). `delegate({ prompt })` hands a self-contained sub-task to this project's configured **worker model** (any OpenAI-compatible chat endpoint) and returns its result — so the model you're talking to can offload bounded work to a cheaper worker. The prompt is self-contained: the worker sees only it, not the conversation.

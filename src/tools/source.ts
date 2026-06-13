@@ -7,6 +7,15 @@ import { applyEdit } from '../edit.js';
 import { invalidateWrittenFile } from '../cache.js';
 import { queryCodeGraph } from '../graph.js';
 import { jsonText } from '../result.js';
+import { fileURLToPath } from 'node:url';
+
+// A `file://` URL and the bare absolute path it denotes must resolve to the
+// SAME cache key, or warm-then-query mismatches (find_symbol / code_graph warm
+// under one form and query under the other → 0 hits). Normalise `file://` to
+// the bare path so both halves agree. GitHub / Notion URLs pass through.
+export function normalizeSourceUrl(sourceUrl: string): string {
+  return sourceUrl.startsWith('file://') ? fileURLToPath(sourceUrl) : sourceUrl;
+}
 
 export function registerSourceTools(server: McpServer): void {
   // -------------------------------------------------------------------------
@@ -151,11 +160,12 @@ export function registerSourceTools(server: McpServer): void {
       },
     },
     async ({ sourceUrl, name, ref, kind }) => {
-      const adapter = await pickSourceAdapter(sourceUrl);
-      const env = resolveSourceEnv(sourceUrl);
-      await warmSource(adapter, env, sourceUrl, { ref });
+      const src = normalizeSourceUrl(sourceUrl);
+      const adapter = await pickSourceAdapter(src);
+      const env = resolveSourceEnv(src);
+      await warmSource(adapter, env, src, { ref });
       const hits = findSymbols(name, {
-        sources: [{ sourceId: sourceUrl, version: ref ?? '' }],
+        sources: [{ sourceId: src, version: ref ?? '' }],
       });
       const filtered = kind ? hits.filter((h) => h.kind === kind) : hits;
       return {
@@ -267,10 +277,11 @@ export function registerSourceTools(server: McpServer): void {
       },
     },
     async ({ sourceUrl, symbol, ref }) => {
-      const adapter = await pickSourceAdapter(sourceUrl);
-      const env = resolveSourceEnv(sourceUrl);
-      await warmSource(adapter, env, sourceUrl, { ref });
-      const text = queryCodeGraph(sourceUrl, ref ?? '', symbol);
+      const src = normalizeSourceUrl(sourceUrl);
+      const adapter = await pickSourceAdapter(src);
+      const env = resolveSourceEnv(src);
+      await warmSource(adapter, env, src, { ref });
+      const text = queryCodeGraph(src, ref ?? '', symbol);
       return { content: [{ type: 'text', text }] };
     }
   );
