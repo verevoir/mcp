@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.22.0 — 2026-06-13
+
+**`write_file` / `edit_file`: `branch` + `commitMessage` are now optional** (STDIO-302). They're only used for GitHub commits — filesystem and Notion writes ignore them — so requiring them on every call was a smell (required-but-ignored). They're now optional in the schema; a **GitHub** source still gets a clear error if either is missing, and filesystem / Notion callers simply omit them. No behaviour change for GitHub callers that already passed both.
+
 ## 0.21.0 — 2026-06-12
 
 **New: `delegate` tool — the coordinator→worker connector** (STDIO-345). `delegate({ prompt })` hands a self-contained sub-task to this project's configured **worker model** (any OpenAI-compatible chat endpoint) and returns its result — so the model you're talking to can offload bounded work to a cheaper worker. The prompt is self-contained: the worker sees only it, not the conversation.
