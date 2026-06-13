@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.22.1 — 2026-06-13
+
+- **Dependency-currency sweep** (STDIO-334): `@verevoir/recipes` `^0.3.2 → ^0.5.0`, `@verevoir/context` `^0.11.1 → ^0.11.2`, `@verevoir/workflows` `^0.5.0 → ^0.5.1`. Added a direct `@verevoir/llm` `^0.13.0` dependency: recipes `0.5.0` moved `@verevoir/llm` to an (optional) **peer** dependency (STDIO-343), but `recipes/engine` still statically imports `@verevoir/llm/anthropic` as the default reasoning client, so a consumer that uses provisioning must provide it. mcp's `provision` tool calls `provisionPractices` on the default client, so llm is now declared directly rather than relied on transitively. No behaviour change; `npm audit` clean.
+
 ## 0.22.0 — 2026-06-13
 
 - **`write_file` / `edit_file`: `branch` + `commitMessage` are now optional** (STDIO-302). They're only used for GitHub commits — filesystem and Notion writes ignore them — so requiring them on every call was a smell (required-but-ignored). They're now optional in the schema; a **GitHub** source still gets a clear error if either is missing, and filesystem / Notion callers simply omit them. No behaviour change for GitHub callers that already passed both.
