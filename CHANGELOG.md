@@ -1,10 +1,9 @@
 # Changelog
 
 ## 0.22.0 — 2026-06-13
-**`write_file` / `edit_file`: `branch` + `commitMessage` are now optional** (STDIO-302). They're only used for GitHub commits — filesystem and Notion writes ignore them — so requiring them on every call was a smell (required-but-ignored). They're now optional in the schema; a **GitHub** source still gets a clear error if either is missing, and filesystem / Notion callers simply omit them. No behaviour change for GitHub callers that already passed both.
 
-## 0.22.0 — 2026-06-13
-**`find_symbol` / `code_graph` now work with a `file://` URL** (STDIO-317). A `file://` source warmed the cache under one key and was queried under another, so it returned **0 hits** (a bare absolute path worked). Both handlers now normalise `file://` to the bare path before warming + querying, so the two halves share one key. Verified end-to-end: `file://` and the bare path return identical results.
+- **`write_file` / `edit_file`: `branch` + `commitMessage` are now optional** (STDIO-302). They're only used for GitHub commits — filesystem and Notion writes ignore them — so requiring them on every call was a smell (required-but-ignored). They're now optional in the schema; a **GitHub** source still gets a clear error if either is missing, and filesystem / Notion callers simply omit them. No behaviour change for GitHub callers that already passed both.
+- **`find_symbol` / `code_graph` now work with a `file://` URL** (STDIO-317). A `file://` source warmed the cache under one key and was queried under another, so it returned **0 hits** (a bare absolute path worked). Both handlers now normalise `file://` to the bare path before warming + querying, so the two halves share one key. Verified end-to-end: `file://` and the bare path return identical results.
 
 ## 0.21.0 — 2026-06-12
 
