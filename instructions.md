@@ -7,7 +7,7 @@ Verevoir is the front door for reading and writing files, code, and project cont
 
 ## Before you change code, consult the bar
 
-Before you implement, write, or change code, call **`provision`** with a short description of the work. It returns the **practices your output is held to** — in one call, as text, not an index to chase. Treat this as a precondition for the change, the same way writing through the MCP is: skip it and your code is judged against standards you never read. If you hand the work to another model (a cheaper worker you spawn), pass the returned frame in its prompt — a floor worker won't fetch the bar itself, so the practices must travel with the task. (`find_governance` is still there for browsing the wider record; `provision` is the triggered shortcut for "what am I held to for _this_.")
+Before you implement, write, or change code, call **`provision`** with a short description of the work. It returns the **practices your output is held to** — in one call, as text, not an index to chase. Treat this as a precondition for the change, the same way writing through the MCP is: skip it and your code is judged against standards you never read. If you hand the work to another model, the practices must travel with it — a floor worker won't fetch the bar itself. The **`delegate`** tool does this for you by default (it provisions the task and carries the frame to the worker); for a sub-agent you spawn another way, pass the returned frame in its prompt yourself. (`find_governance` is still there for browsing the wider record; `provision` is the triggered shortcut for "what am I held to for _this_.")
 
 ## One surface, auto-routed by URL
 

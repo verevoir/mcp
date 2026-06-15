@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.0 — 2026-06-15
+
+- **`delegate` is governed by default** (STDIO-346). A delegated worker won't fetch the bar itself, so the practices **and** capabilities its work is held to now travel with the task automatically: with the MCP loaded you've opted into governance, so `delegate` provisions the task (`provisionFrame`) and prepends the resulting frame to the worker's prompt. The frame is **resolved afresh from each worker's own prompt** — the bar must fit the task in hand, not one further up a delegation chain, so there's nothing to pass on or reuse. `governed: false` is the explicit escape for genuinely throwaway work. The worker-config check runs first, so an unconfigured worker never triggers a wasted provision; `provisionFrame` never throws (it degrades to the foundational floor), so governance can't block a call. Found via the cpu8 stress-test: practices were **pull-only** and workers almost never pulled, so delegated builds ran with none of the bar.
+
 ## 0.22.1 — 2026-06-13
 
 - **Dependency-currency sweep** (STDIO-334): `@verevoir/recipes` `^0.3.2 → ^0.5.0`, `@verevoir/context` `^0.11.1 → ^0.11.2`, `@verevoir/workflows` `^0.5.0 → ^0.5.1`. Added a direct `@verevoir/llm` `^0.13.0` dependency: recipes `0.5.0` moved `@verevoir/llm` to an (optional) **peer** dependency (STDIO-343), but `recipes/engine` still statically imports `@verevoir/llm/anthropic` as the default reasoning client, so a consumer that uses provisioning must provide it. mcp's `provision` tool calls `provisionPractices` on the default client, so llm is now declared directly rather than relied on transitively. No behaviour change; `npm audit` clean.

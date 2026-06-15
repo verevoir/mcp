@@ -21,10 +21,25 @@ function setEnv(model?: string, url?: string, apiKey?: string) {
 }
 
 function okFetch(content: string) {
-  return vi.fn(async () => ({
-    ok: true,
-    json: async () => ({ choices: [{ message: { content } }] }),
-  }));
+  return vi.fn((_url: string, _init: RequestInit) =>
+    Promise.resolve({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content } }] }),
+    })
+  );
+}
+
+// A provision stub so the governance path stays hermetic — the real
+// `provisionFrame` reads the guardrails corpus and may make a reasoning call.
+// `delegate` takes the provider as an injectable 2nd arg for exactly this.
+const stubFrame = (text: string) => vi.fn(async (_prose: string) => text);
+
+function bodyOf(fetchMock: ReturnType<typeof okFetch>) {
+  const init = fetchMock.mock.calls[0][1];
+  return JSON.parse(init.body as string) as {
+    model: string;
+    messages: { role: string; content: string }[];
+  };
 }
 
 describe('workerConfig', () => {
@@ -42,7 +57,7 @@ describe('workerConfig', () => {
   });
 });
 
-describe('delegate', () => {
+describe('delegate — transport', () => {
   it('returns a terse, config-opaque notice when no worker model is configured', async () => {
     setEnv();
     const out = await delegate({ prompt: 'do a thing' });
@@ -56,7 +71,7 @@ describe('delegate', () => {
     const fetchMock = okFetch('worker says hi');
     vi.stubGlobal('fetch', fetchMock);
 
-    const out = await delegate({ prompt: 'summarise X', system: 'be terse' });
+    const out = await delegate({ prompt: 'summarise X', system: 'be terse', governed: false });
 
     expect(out).toBe('worker says hi');
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -76,7 +91,7 @@ describe('delegate', () => {
     const fetchMock = okFetch('ok');
     vi.stubGlobal('fetch', fetchMock);
 
-    await delegate({ prompt: 'p', model: 'override-model' });
+    await delegate({ prompt: 'p', model: 'override-model', governed: false });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.example.com/v1/chat/completions');
@@ -92,7 +107,7 @@ describe('delegate', () => {
         throw new Error('ECONNREFUSED');
       })
     );
-    const out = await delegate({ prompt: 'p' });
+    const out = await delegate({ prompt: 'p', governed: false });
     expect(out).toContain('Could not reach the worker');
     expect(out).toContain('ollama serve');
   });
@@ -103,8 +118,56 @@ describe('delegate', () => {
       'fetch',
       vi.fn(async () => ({ ok: false, status: 404, text: async () => 'model not found' }))
     );
-    const out = await delegate({ prompt: 'p' });
+    const out = await delegate({ prompt: 'p', governed: false });
     expect(out).toContain('HTTP 404');
     expect(out).toContain('model not found');
+  });
+});
+
+describe('delegate — governance (the frame travels with the task)', () => {
+  it('is governed by default: provisions the task and prepends the frame to the worker system message', async () => {
+    setEnv('qwen2.5:7b');
+    const fetchMock = okFetch('done');
+    vi.stubGlobal('fetch', fetchMock);
+    const provision = stubFrame('THE BAR');
+
+    const out = await delegate({ prompt: 'add a feature' }, provision);
+
+    expect(out).toBe('done');
+    expect(provision).toHaveBeenCalledWith('add a feature');
+    expect(bodyOf(fetchMock).messages).toEqual([
+      { role: 'system', content: 'THE BAR' },
+      { role: 'user', content: 'add a feature' },
+    ]);
+  });
+
+  it('governed: false skips provisioning entirely (throwaway work)', async () => {
+    setEnv('qwen2.5:7b');
+    const fetchMock = okFetch('ok');
+    vi.stubGlobal('fetch', fetchMock);
+    const provision = stubFrame('X');
+
+    await delegate({ prompt: 'summarise this', governed: false }, provision);
+
+    expect(provision).not.toHaveBeenCalled();
+    expect(bodyOf(fetchMock).messages).toEqual([{ role: 'user', content: 'summarise this' }]);
+  });
+
+  it('prepends the provisioned frame before a caller system instruction', async () => {
+    setEnv('qwen2.5:7b');
+    const fetchMock = okFetch('ok');
+    vi.stubGlobal('fetch', fetchMock);
+
+    await delegate({ prompt: 'p', system: 'be terse' }, stubFrame('BAR'));
+
+    expect(bodyOf(fetchMock).messages[0]).toEqual({ role: 'system', content: 'BAR\n\nbe terse' });
+  });
+
+  it('does not provision when no worker is configured (no wasted call)', async () => {
+    setEnv();
+    const provision = stubFrame('X');
+    const out = await delegate({ prompt: 'p' }, provision);
+    expect(out).toContain('No worker model is configured');
+    expect(provision).not.toHaveBeenCalled();
   });
 });
