@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { parseCapability, type CapabilityDescriptor } from '@verevoir/recipes';
 import { FOUNDATIONAL, provisionPractices, buildCapabilityIndex } from '@verevoir/recipes/engine';
+import type { ChatOptions, ChatReply } from '@verevoir/llm';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 import { fetchEmbedder } from '../embedder.js';
 
@@ -236,25 +237,60 @@ export function renderCapabilities(caps: SurfacedCapability[] | null): string | 
   );
 }
 
+/** The reasoning provider used to concern-tag practices. Defaults to Anthropic
+ * (unchanged behaviour); `AIGENCY_REASONING_PROVIDER` selects another. Each
+ * provider's `chat` is interchangeable — the same `(ChatOptions) => ChatReply`
+ * shape — and reads its own key env, so tagging is no longer Anthropic-pinned.
+ * (Interim mcp-local convention; align with STDIO-332's account-level routing
+ * when it lands — this env is the seam.) */
+type ChatFn = (options: ChatOptions) => Promise<ChatReply>;
+
+const REASONING_PROVIDERS: Record<
+  string,
+  { keyEnv: string; load: () => Promise<{ chat: ChatFn }> }
+> = {
+  anthropic: { keyEnv: 'ANTHROPIC_API_KEY', load: () => import('@verevoir/llm/anthropic') },
+  google: { keyEnv: 'GEMINI_API_KEY', load: () => import('@verevoir/llm/google') },
+  openai: { keyEnv: 'OPENAI_API_KEY', load: () => import('@verevoir/llm/openai') },
+  deepseek: { keyEnv: 'DEEPSEEK_API_KEY', load: () => import('@verevoir/llm/deepseek') },
+  samba: { keyEnv: 'SAMBA_NOVA_API_KEY', load: () => import('@verevoir/llm/samba') },
+  mistral: { keyEnv: 'MISTRAL_API_KEY', load: () => import('@verevoir/llm/mistral') },
+};
+
+/** Resolve the configured reasoning provider, falling back to Anthropic when
+ * `AIGENCY_REASONING_PROVIDER` is unset or names an unknown provider. */
+export function reasoningProvider(): {
+  name: string;
+  keyEnv: string;
+  load: () => Promise<{ chat: ChatFn }>;
+} {
+  const requested = (process.env.AIGENCY_REASONING_PROVIDER?.trim() || 'anthropic').toLowerCase();
+  const name = REASONING_PROVIDERS[requested] ? requested : 'anthropic';
+  return { name, ...REASONING_PROVIDERS[name] };
+}
+
 /** Provision the practice frame for a piece of work. FOUNDATIONAL floor always;
- * concern-tagged practices too when an ANTHROPIC_API_KEY is set (one reasoning
- * call). A failed tagging call degrades to the floor rather than erroring —
- * consultation is advisory and must never block the work. */
+ * concern-tagged practices too when the configured reasoning provider's key is
+ * set (one reasoning call, on any provider). A failed tagging call degrades to
+ * the floor rather than erroring — consultation is advisory and must never block
+ * the work. */
 export async function provisionFrame(prose: string): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim() || null;
+  const { name, keyEnv, load } = reasoningProvider();
+  const apiKey = process.env[keyEnv]?.trim() || null;
   let ids: string[];
   let note: string;
   if (apiKey) {
     try {
-      ids = await provisionPractices({ prose }, apiKey);
-      note = 'concern-tagged for this work';
+      const { chat } = await load();
+      ids = await provisionPractices({ prose }, apiKey, 'reasoning', chat);
+      note = `concern-tagged for this work (${name})`;
     } catch (err) {
       ids = [...FOUNDATIONAL];
       note = `foundational floor only — concern-tagging failed (${String(err)})`;
     }
   } else {
     ids = [...FOUNDATIONAL];
-    note = 'foundational floor only — set ANTHROPIC_API_KEY to add concern-specific practices';
+    note = `foundational floor only — set ${keyEnv} to add concern-specific practices`;
   }
   const loaded = await loadPracticeBodies(ids);
   const practicesText = renderFrame(loaded, ids, note);
