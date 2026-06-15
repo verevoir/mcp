@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.24.0 — 2026-06-15
+
+- **Practice concern-tagging is no longer Anthropic-pinned** (STDIO-347). `provisionFrame`'s reasoning call — which tags a task's applicable concerns — now runs on the **configured reasoning provider** instead of always Anthropic. `AIGENCY_REASONING_PROVIDER` selects one of `anthropic` / `google` / `openai` / `deepseek` / `samba` / `mistral` (default `anthropic`, so **no behaviour change**), gating on that provider's own key env and lazily importing its `@verevoir/llm` chat. Concern-tagging still degrades to the foundational floor on any failure. This matters more now that governed `delegate` (0.23.0) provisions on every call. Interim mcp-local convention — aligns with STDIO-332's account-level routing when that lands; the env is the seam. (STDIO-348 will go further: drop the reasoning call and select practices by a prose parse shared with capability retrieval.)
+
 ## 0.23.0 — 2026-06-15
 
 - **`delegate` is governed by default** (STDIO-346). A delegated worker won't fetch the bar itself, so the practices **and** capabilities its work is held to now travel with the task automatically: with the MCP loaded you've opted into governance, so `delegate` provisions the task (`provisionFrame`) and prepends the resulting frame to the worker's prompt. The frame is **resolved afresh from each worker's own prompt** — the bar must fit the task in hand, not one further up a delegation chain, so there's nothing to pass on or reuse. `governed: false` is the explicit escape for genuinely throwaway work. The worker-config check runs first, so an unconfigured worker never triggers a wasted provision; `provisionFrame` never throws (it degrades to the foundational floor), so governance can't block a call. Found via the cpu8 stress-test: practices were **pull-only** and workers almost never pulled, so delegated builds ran with none of the bar.

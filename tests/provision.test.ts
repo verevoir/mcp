@@ -9,7 +9,12 @@ vi.mock('../src/router.js', () => ({
   resolveSourceEnv: vi.fn(() => ({})),
 }));
 
-import { provisionFrame, loadPracticeBodies, renderFrame } from '../src/tools/provision.js';
+import {
+  provisionFrame,
+  loadPracticeBodies,
+  renderFrame,
+  reasoningProvider,
+} from '../src/tools/provision.js';
 import { pickSourceAdapter } from '../src/router.js';
 import { provisionPractices } from '@verevoir/recipes/engine';
 
@@ -79,7 +84,9 @@ describe('provisionFrame', () => {
 
     expect(provisionPractices).toHaveBeenCalledWith(
       { prose: 'change the deploy pipeline' },
-      'sk-test'
+      'sk-test',
+      'reasoning',
+      expect.any(Function)
     );
     expect(frame).toContain('concern-tagged for this work');
     expect(frame).toContain('Ship behind a switch.');
@@ -138,5 +145,32 @@ describe('renderFrame', () => {
     const out = renderFrame([{ id: 'a', body: '# A\nalpha' }], ['a', 'b'], 'concern-tagged');
     expect(out).toContain('alpha');
     expect(out).toContain('Provisioned but unreadable: b');
+  });
+});
+
+describe('reasoningProvider', () => {
+  const saved = process.env.AIGENCY_REASONING_PROVIDER;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.AIGENCY_REASONING_PROVIDER;
+    else process.env.AIGENCY_REASONING_PROVIDER = saved;
+  });
+
+  it('defaults to Anthropic when unset (unchanged behaviour)', () => {
+    delete process.env.AIGENCY_REASONING_PROVIDER;
+    const p = reasoningProvider();
+    expect(p.name).toBe('anthropic');
+    expect(p.keyEnv).toBe('ANTHROPIC_API_KEY');
+  });
+
+  it('selects the configured provider and its key env (case-insensitive)', () => {
+    process.env.AIGENCY_REASONING_PROVIDER = 'MisTraL';
+    const p = reasoningProvider();
+    expect(p.name).toBe('mistral');
+    expect(p.keyEnv).toBe('MISTRAL_API_KEY');
+  });
+
+  it('falls back to Anthropic for an unknown provider', () => {
+    process.env.AIGENCY_REASONING_PROVIDER = 'frobnicate';
+    expect(reasoningProvider().name).toBe('anthropic');
   });
 });
