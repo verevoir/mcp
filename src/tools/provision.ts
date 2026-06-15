@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { parseCapability, type CapabilityDescriptor } from '@verevoir/recipes';
-import { FOUNDATIONAL, provisionPractices, buildCapabilityIndex } from '@verevoir/recipes/engine';
+import {
+  FOUNDATIONAL,
+  provisionPractices,
+  retrieveCapabilities as retrieveSurfacedCapabilities,
+  type SurfacedCapability,
+} from '@verevoir/recipes/engine';
 import type { ChatOptions, ChatReply } from '@verevoir/llm';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 import { fetchEmbedder } from '../embedder.js';
@@ -134,11 +139,10 @@ const CAPABILITIES_DIRS = ['corpus/capabilities', 'capabilities'];
 // the full DEFAULT_K.
 const CAPABILITY_SURFACE_K = 8;
 
-/** A capability surfaced in the frame. */
-export interface SurfacedCapability {
-  type: string;
-  summary: string;
-}
+/** A capability surfaced in the frame — the shared shape from
+ * `@verevoir/recipes`, re-exported so the MCP and the website surface matches in
+ * exactly the same form (STDIO-328). */
+export type { SurfacedCapability };
 
 let corpusMemo: CapabilityDescriptor[] | null = null;
 
@@ -216,14 +220,10 @@ export async function retrieveCapabilities(
   const embedder = fetchEmbedder();
   if (!embedder) return null;
   const corpus = await loadCapabilityCorpus();
-  if (corpus.length === 0) return [];
-  const byType = new Map(corpus.map((c) => [c.type, c]));
-  const index = await buildCapabilityIndex(corpus, embedder);
-  const hits = await index.retrieve(prose, k);
-  return hits.map((h) => {
-    const c = byType.get(h.type);
-    return { type: h.type, summary: c?.description ?? c?.postcondition ?? '' };
-  });
+  // The match itself — index build, cache, cosine, the `{ type, summary }`
+  // shape — lives once in recipes; the MCP supplies only the host bits (its
+  // fetch embedder, its corpus loader). Same matcher the website drives.
+  return retrieveSurfacedCapabilities(prose, corpus, embedder, k);
 }
 
 /** Render the advisory capability section, or `null` to omit it (no endpoint

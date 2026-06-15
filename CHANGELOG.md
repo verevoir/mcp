@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.25.0 — 2026-06-15
+
+- **`provision` drives the shared capability matcher** (STDIO-328). The advisory capability surfacing in `provisionFrame` no longer hand-rolls its own index-build + cosine + `{ type, summary }` mapping — that logic now lives once in `@verevoir/recipes` (`retrieveCapabilities`), and the MCP supplies only the host-specific bits (its fetch embedder, its corpus loader). `SurfacedCapability` is re-exported from recipes so the MCP and the website surface matches in **exactly the same shape**, rather than each keeping a copy that can drift. No behaviour change. (`@verevoir/recipes` `^0.5.0 → ^0.6.0`.)
+
 ## 0.24.0 — 2026-06-15
 
 - **Practice concern-tagging is no longer Anthropic-pinned** (STDIO-347). `provisionFrame`'s reasoning call — which tags a task's applicable concerns — now runs on the **configured reasoning provider** instead of always Anthropic. `AIGENCY_REASONING_PROVIDER` selects one of `anthropic` / `google` / `openai` / `deepseek` / `samba` / `mistral` (default `anthropic`, so **no behaviour change**), gating on that provider's own key env and lazily importing its `@verevoir/llm` chat. Concern-tagging still degrades to the foundational floor on any failure. This matters more now that governed `delegate` (0.23.0) provisions on every call. Interim mcp-local convention — aligns with STDIO-332's account-level routing when that lands; the env is the seam. (STDIO-348 will go further: drop the reasoning call and select practices by a prose parse shared with capability retrieval.)

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('@verevoir/recipes/engine', () => ({
   FOUNDATIONAL: ['automated-testing'],
   provisionPractices: vi.fn(),
-  buildCapabilityIndex: vi.fn(),
+  retrieveCapabilities: vi.fn(),
 }));
 vi.mock('@verevoir/recipes', () => ({
   // parseCapability returns a minimal descriptor; the body's first line is the
@@ -29,7 +29,7 @@ import {
   clearCapabilityCorpusMemo,
 } from '../src/tools/provision.js';
 import { pickSourceAdapter } from '../src/router.js';
-import { buildCapabilityIndex } from '@verevoir/recipes/engine';
+import { retrieveCapabilities as recipesRetrieve } from '@verevoir/recipes/engine';
 import { fetchEmbedder } from '../src/embedder.js';
 
 /** An adapter serving practice and/or capability corpus dirs. */
@@ -59,15 +59,23 @@ function corpusAdapter(opts: {
   };
 }
 
-/** A buildCapabilityIndex that ranks the corpus in order — deterministic. */
-function fakeIndex() {
-  return vi.mocked(buildCapabilityIndex).mockImplementation(
-    async (corpus: { type: string }[]) =>
-      ({
-        retrieve: async (_prose: string, k: number) =>
-          corpus.slice(0, k).map((c, i) => ({ type: c.type, score: 1 - i * 0.1 })),
-      }) as never
-  );
+/** A recipes `retrieveCapabilities` that surfaces the corpus in order —
+ * deterministic. Mirrors the real `{ type, summary }` shape so the MCP wrapper
+ * (corpus load + embedder guard) is what's under test, not the ranking. */
+function fakeMatcher() {
+  return vi
+    .mocked(recipesRetrieve)
+    .mockImplementation(
+      async (
+        _prose: string,
+        corpus: { type: string; description?: string; postcondition?: string }[],
+        _embedder: unknown,
+        k: number = corpus.length
+      ) =>
+        corpus
+          .slice(0, k)
+          .map((c) => ({ type: c.type, summary: c.description ?? c.postcondition ?? '' })) as never
+    );
 }
 
 const fakeEmbedder = { id: 'fake', embed: async () => [[1]] };
@@ -75,7 +83,7 @@ const fakeEmbedder = { id: 'fake', embed: async () => [[1]] };
 beforeEach(() => {
   clearCapabilityCorpusMemo();
   vi.mocked(pickSourceAdapter).mockReset();
-  vi.mocked(buildCapabilityIndex).mockReset();
+  vi.mocked(recipesRetrieve).mockReset();
   vi.mocked(fetchEmbedder).mockReset();
   delete process.env.ANTHROPIC_API_KEY;
 });
@@ -110,7 +118,7 @@ describe('retrieveCapabilities', () => {
         },
       }) as never
     );
-    fakeIndex();
+    fakeMatcher();
 
     const caps = await retrieveCapabilities('attach my github repo');
     expect(caps?.map((c) => c.type)).toEqual(['connect-existing-repos', 'deploy-walking-skeleton']);
@@ -127,7 +135,7 @@ describe('provisionFrame with the capability axis', () => {
         capabilities: { 'connect-existing-repos': 'Connect a repo and review it' },
       }) as never
     );
-    fakeIndex();
+    fakeMatcher();
 
     const frame = await provisionFrame('attach my repo and add a feature');
 
