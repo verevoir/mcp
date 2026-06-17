@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.34.0 — 2026-06-17
+
+- **Per-tier model slots — `AIGENCY_MODEL_REASONING` / `_DRAFTING` / `_EXTRACTION`** (STDIO-380). aigency's own model tiers map to the `@verevoir/llm` `ModelClass` ladder, and each can be named — by family or id — in its own env var. The named model resolves through the shared provider registry (`tiers.ts` → `modelConnection`, STDIO-378) to a usable OpenAI-compatible connection at use time, so config names a model by family and the concrete version binds when it runs. `delegate` now falls back to the **extraction** tier when no explicit or configured worker is set, resolving `AIGENCY_MODEL_EXTRACTION` by family to a real endpoint. The coordinator/Opus tier is the host's model, not set here. Registry-warming is extracted to a shared `registry.ts` (used by both `dispatch` and the tier slots), replacing `dispatch`'s private copy.
+
 ## 0.33.0 — 2026-06-17
 
 - **Async / background dispatch — `dispatch_start` + `dispatch_result`** (STDIO-384). A synchronous tool call is bounded by the host's request timeout, so a long agentic run on a slow hosted model (DeepSeek-on-samba) times out. `dispatch_start` kicks the loop off **detached** and returns a handle immediately; `dispatch_result` **polls** it — `running` (with the progress so far) / `done` (the result text + trace + metering) / `failed`. The run pushes its progress into the job as it goes. This is the large/slow lane of the adaptive policy (sync `dispatch` stays the small/fast lane); same shape as A2A's task lifecycle (the in-MCP version). Background jobs are kept in an in-process store for the process lifetime.
