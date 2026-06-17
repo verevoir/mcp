@@ -14,6 +14,7 @@ import {
   loadPracticeBodies,
   renderFrame,
   reasoningProvider,
+  reasoningProvidersSummary,
   listPracticeIds,
   loadConcernMenu,
   renderMenu,
@@ -297,6 +298,46 @@ describe('renderFrame', () => {
     const out = renderFrame([{ id: 'a', body: '# A\nalpha' }], ['a', 'b'], 'concern-tagged');
     expect(out).toContain('alpha');
     expect(out).toContain('Provisioned but unreadable: b');
+  });
+});
+
+describe('reasoningProvidersSummary (STDIO-377)', () => {
+  const KEYS = [
+    'ANTHROPIC_API_KEY',
+    'GEMINI_API_KEY',
+    'OPENAI_API_KEY',
+    'DEEPSEEK_API_KEY',
+    'SAMBA_NOVA_API_KEY',
+    'MISTRAL_API_KEY',
+  ];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('lists every supported reasoning provider', () => {
+    const s = reasoningProvidersSummary();
+    for (const p of ['anthropic', 'google', 'openai', 'deepseek', 'samba', 'mistral']) {
+      expect(s).toContain(p);
+    }
+  });
+
+  it('names the providers configured on this host', () => {
+    process.env.DEEPSEEK_API_KEY = 'sk-x';
+    expect(reasoningProvidersSummary()).toContain('Configured on this host: deepseek');
+  });
+
+  it('prompts to configure one when none are set', () => {
+    expect(reasoningProvidersSummary()).toContain('None configured');
   });
 });
 

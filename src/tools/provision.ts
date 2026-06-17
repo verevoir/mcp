@@ -361,6 +361,22 @@ export function reasoningProvider(): {
   return { name, ...REASONING_PROVIDERS[name] };
 }
 
+/** A host-aware one-liner: which reasoning providers are supported, and which
+ * are configured (key present) right now. Read at tool-registration time so the
+ * `provision` description reflects this deployment — making the concern-tagging
+ * providers discoverable instead of buried in the source (STDIO-377). */
+export function reasoningProvidersSummary(): string {
+  const names = Object.keys(REASONING_PROVIDERS);
+  const configured = names.filter((n) => process.env[REASONING_PROVIDERS[n].keyEnv]?.trim());
+  return (
+    `Concern-tagging (autoTag) runs on AIGENCY_REASONING_PROVIDER (default anthropic). ` +
+    `Supported: ${names.join(', ')}. ` +
+    (configured.length
+      ? `Configured on this host: ${configured.join(', ')}.`
+      : `None configured here — set a provider's API key (e.g. DEEPSEEK_API_KEY) and AIGENCY_REASONING_PROVIDER.`)
+  );
+}
+
 /** What a `provision` call asks for. A bare string is shorthand for
  * `{ prose }` (the default catalogue), so existing callers keep working. */
 export interface ProvisionRequest {
@@ -446,7 +462,8 @@ export function registerProvisionTool(server: McpServer): void {
     'provision',
     {
       description:
-        "Before you implement or change code, call `provision` with a short description of the work. By default it returns the **foundational floor practices in full** plus a **menu of the concern practices** (each with a one-line summary): you see the whole task, so pick the ones that apply and call `provision` again with `concerns: ['id', …]` to pull their full text — a complete frame you can also hand to a worker. (You narrow more accurately than an isolated classifier.) Pass `autoTag: true` only for a weak/headless caller with no coordinator to narrow: it selects concern practices in-MCP via the reasoning provider (needs its key). It also surfaces advisory **capabilities** that may fit, when an embeddings endpoint is configured. If you delegate the work, pass the returned frame in the worker's prompt — a floor worker won't fetch the bar itself.",
+        "Before you implement or change code, call `provision` with a short description of the work. By default it returns the **foundational floor practices in full** plus a **menu of the concern practices** (each with a one-line summary): you see the whole task, so pick the ones that apply and call `provision` again with `concerns: ['id', …]` to pull their full text — a complete frame you can also hand to a worker. (You narrow more accurately than an isolated classifier.) Pass `autoTag: true` only for a weak/headless caller with no coordinator to narrow: it selects concern practices in-MCP via the reasoning provider (needs its key). It also surfaces advisory **capabilities** that may fit, when an embeddings endpoint is configured. If you delegate the work, pass the returned frame in the worker's prompt — a floor worker won't fetch the bar itself. " +
+        reasoningProvidersSummary(),
       inputSchema: {
         prose: z
           .string()

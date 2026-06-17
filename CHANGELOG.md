@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.28.0 — 2026-06-17
+
+- **Ship the provider SDKs + advertise providers dynamically** (STDIO-377). The MCP declared six reasoning providers (STDIO-347) but shipped only `@anthropic-ai/sdk`, so `import('@verevoir/llm/<p>')` threw for deepseek/openai/samba/mistral ("Cannot find package 'openai'") and google ("@google/genai") — **five of six reasoning providers were dead on the published host** (why a coordinator "couldn't find deepseek"). Add `openai` (covers openai/deepseek/samba/mistral) + `@google/genai` (google) as dependencies so every provider loads. And make two tool descriptions **dynamic**, read at registration so they reflect the actual deployment: `provision` lists the supported reasoning providers and which are configured here (`reasoningProvidersSummary`); `delegate` reports the configured worker (model + endpoint) or that none is set, noting the worker is any OpenAI-compatible endpoint with a local Ollama default (`workerSummary`). So a coordinator discovers what's available instead of guessing.
+
 ## 0.27.0 — 2026-06-17
 
 - **Adopt `@verevoir/llm` 0.14.0** (STDIO-376) — `^0.13.0 → ^0.14.0`. The reasoning provider (`provisionFrame` autoTag) imports `@verevoir/llm/<provider>` and calls `chat()`, and those adapters now honour per-provider **base-URL overrides** (`<PROVIDER>_BASE_URL`) plus keyless-local (openai). So setting e.g. `SAMBA_NOVA_BASE_URL` / `ANTHROPIC_BASE_URL` on the MCP host points its reasoning calls at a gateway / proxy / regional / self-hosted endpoint with **no MCP code change**. The cross-provider routing surface (`resolveModel` / `isProviderConfigured`) is now available to wire into reasoning-provider selection (follow-on). No behaviour change without the new envs set.
