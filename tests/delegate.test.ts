@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { registerModelCatalog } from '@verevoir/llm';
 import {
   delegate,
   workerConfig,
@@ -257,5 +258,86 @@ describe('delegate model resolution (STDIO-379)', () => {
 
     // The loose "deepseek" was resolved to the newest served id before the call.
     expect(bodyOf(fetchMock).model).toBe('DeepSeek-V3.2');
+  });
+});
+
+describe('delegate metering (STDIO-388)', () => {
+  function fetchWithUsage(content: string, usage: unknown) {
+    return vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ choices: [{ message: { content } }], usage }),
+      })
+    );
+  }
+
+  beforeEach(() => {
+    delete process.env.AIGENCY_METER;
+    registerModelCatalog([
+      {
+        provider: 'mtrtest',
+        family: 'mtr-worker',
+        modelClass: 'extraction',
+        currentId: 'mtr-worker',
+        rates: [0.6, 1.5],
+        label: 'Metering Worker',
+        prefixes: ['mtr-worker'],
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    delete process.env.AIGENCY_METER;
+  });
+
+  it('appends no footer when neither the meter arg nor the env is set', async () => {
+    setEnv('mtr-worker', 'https://worker.example/v1', 'sk-x');
+    vi.stubGlobal(
+      'fetch',
+      fetchWithUsage('reviewed', { prompt_tokens: 1000, completion_tokens: 500 })
+    );
+
+    const out = await delegate({ prompt: 'review', governed: false });
+
+    expect(out).toBe('reviewed');
+  });
+
+  it('appends a cost table with the priced model when meter is totals-only', async () => {
+    setEnv('mtr-worker', 'https://worker.example/v1', 'sk-x');
+    vi.stubGlobal(
+      'fetch',
+      fetchWithUsage('reviewed', { prompt_tokens: 1000, completion_tokens: 500 })
+    );
+
+    const out = await delegate({ prompt: 'review', governed: false, meter: 'totals-only' });
+
+    expect(out).toContain('reviewed');
+    expect(out).toContain('metering total');
+    expect(out).toContain('Metering Worker');
+    expect(out).toMatch(/\$\d/); // a real price, not absent
+  });
+
+  it('honours the AIGENCY_METER env default when no meter arg is given', async () => {
+    process.env.AIGENCY_METER = 'totals-only';
+    setEnv('mtr-worker', 'https://worker.example/v1', 'sk-x');
+    vi.stubGlobal(
+      'fetch',
+      fetchWithUsage('reviewed', { prompt_tokens: 1000, completion_tokens: 500 })
+    );
+
+    const out = await delegate({ prompt: 'review', governed: false });
+
+    expect(out).toContain('metering total');
+  });
+
+  it('reports a legible note (not a $0 table) when the worker returns no usage', async () => {
+    setEnv('mtr-worker', 'https://worker.example/v1', 'sk-x');
+    vi.stubGlobal('fetch', fetchWithUsage('reviewed', undefined));
+
+    const out = await delegate({ prompt: 'review', governed: false, meter: 'totals-only' });
+
+    expect(out).toContain('reviewed');
+    expect(out).toContain('no token usage');
+    expect(out).not.toContain('metering total');
   });
 });
