@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.40.0 — 2026-06-17
+
+- **Opaque dispatch task ids** (STDIO-398, second slice). Background dispatch handles were sequential (`disp-1`, `disp-2`, …), so on the A2A surface a caller could guess another caller's handle and read its task (IDOR). Handles are now unguessable (`disp-<uuid>`), so they can't be enumerated. Combined with the loopback-bind default (0.39.0), the A2A IDOR is closed both by default (not network-reachable) and structurally (handles aren't guessable). Remaining on STDIO-398: bearer auth + per-caller scoping when the server is deliberately exposed, and job TTL.
+
 ## 0.39.0 — 2026-06-17
 
 - **A2A server binds loopback by default** (STDIO-398, partial). The `verevoir-a2a` server (STDIO-382) is unauthenticated, but `node http` `listen(port)` binds all interfaces (`0.0.0.0`) — so as shipped it was network-reachable, letting anyone who could reach the port submit dispatch tasks on your worker credits and read other callers' tasks. It now binds `127.0.0.1` by default (`DEFAULT_A2A_HOST`); exposing it off-loopback is an explicit opt-in via the `host` option / `HOST` env, which logs a warning. This closes the network-exposure half of the threat (from the STDIO-393 threat model, S3); authentication and opaque/unguessable task ids remain on STDIO-398.

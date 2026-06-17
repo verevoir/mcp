@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   resolveModelByTerm,
@@ -332,12 +333,10 @@ export interface DispatchJob {
 }
 
 const JOBS = new Map<string, DispatchJob>();
-let jobSeq = 0;
 
 /** Test seam: drop all background jobs. */
 export function clearDispatchJobs(): void {
   JOBS.clear();
-  jobSeq = 0;
 }
 
 /** Start a dispatch run in the background; returns a handle immediately. The
@@ -347,8 +346,9 @@ export function startDispatch(
   input: DispatchInput,
   run: (i: DispatchInput, deps: DispatchDeps) => Promise<string> = dispatchTask
 ): DispatchJob {
-  jobSeq += 1;
-  const job: DispatchJob = { id: `disp-${jobSeq}`, status: 'running', progress: [] };
+  // Unguessable, non-sequential id — a caller can't enumerate or guess another
+  // job's handle (closes the A2A handle-guessing IDOR on the exposed path; STDIO-398).
+  const job: DispatchJob = { id: `disp-${randomUUID()}`, status: 'running', progress: [] };
   JOBS.set(job.id, job);
   void run(input, { onProgress: (m) => job.progress.push(m) })
     .then((text) => {
