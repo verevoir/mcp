@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.27.0 — 2026-06-17
+
+- **Adopt `@verevoir/llm` 0.14.0** (STDIO-376) — `^0.13.0 → ^0.14.0`. The reasoning provider (`provisionFrame` autoTag) imports `@verevoir/llm/<provider>` and calls `chat()`, and those adapters now honour per-provider **base-URL overrides** (`<PROVIDER>_BASE_URL`) plus keyless-local (openai). So setting e.g. `SAMBA_NOVA_BASE_URL` / `ANTHROPIC_BASE_URL` on the MCP host points its reasoning calls at a gateway / proxy / regional / self-hosted endpoint with **no MCP code change**. The cross-provider routing surface (`resolveModel` / `isProviderConfigured`) is now available to wire into reasoning-provider selection (follow-on). No behaviour change without the new envs set.
+
 ## 0.26.0 — 2026-06-17
 
 - **`provision` selects by the coordinator, not a reasoning call** (STDIO-348). The dedicated concern-tagging LLM call (and its `ANTHROPIC_API_KEY`) is no longer the default path — it was the most expensive _and_ lowest-recall way to select practices (it only ever saw a prose blurb, and demonstrably missed literal matches, e.g. `health-endpoint-is-standard` on "wire a health endpoint"). The floor still always comes back in full with no model call; concern practices are now chosen by whoever has the context:
