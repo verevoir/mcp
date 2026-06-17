@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.26.0 — 2026-06-17
+
+- **`provision` selects by the coordinator, not a reasoning call** (STDIO-348). The dedicated concern-tagging LLM call (and its `ANTHROPIC_API_KEY`) is no longer the default path — it was the most expensive _and_ lowest-recall way to select practices (it only ever saw a prose blurb, and demonstrably missed literal matches, e.g. `health-endpoint-is-standard` on "wire a health endpoint"). The floor still always comes back in full with no model call; concern practices are now chosen by whoever has the context:
+  - **default (catalogue)** — `provision({ prose? })` returns the floor plus a **menu** of the concern practices (id + their one-line `Protects:` blurb). A capable coordinator sees the whole task, narrows the menu, and calls back with `concerns: [...]`. No key, no reasoning call, better selection.
+  - **`provision({ concerns: [...] })`** — the floor plus exactly those concern bodies: a complete, injectable frame.
+  - **`provision({ prose, autoTag: true })`** — select concern practices in-MCP via the reasoning provider (needs its key), for a weak/headless caller with no coordinator to narrow. The **only** path that still needs a key; STDIO-348 v2 (embeddings facet-narrow) aims to retire even it.
+  - **`delegate`** routes its worker through `autoTag` — a worker can't narrow a menu, so it gets full bodies selected in-MCP, as before.
+  - The bare-string form (`provisionFrame('…')`) still works, as the default catalogue. Validated by re-running cpu8 across the worker-model matrix (STDIO-368).
+
 ## 0.25.0 — 2026-06-15
 
 - **`provision` drives the shared capability matcher** (STDIO-328). The advisory capability surfacing in `provisionFrame` no longer hand-rolls its own index-build + cosine + `{ type, summary }` mapping — that logic now lives once in `@verevoir/recipes` (`retrieveCapabilities`), and the MCP supplies only the host-specific bits (its fetch embedder, its corpus loader). `SurfacedCapability` is re-exported from recipes so the MCP and the website surface matches in **exactly the same shape**, rather than each keeping a copy that can drift. No behaviour change. (`@verevoir/recipes` `^0.5.0 → ^0.6.0`.)

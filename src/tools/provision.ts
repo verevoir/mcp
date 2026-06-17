@@ -26,11 +26,21 @@ import { fetchEmbedder } from '../embedder.js';
 // `provision` for the work and bakes the returned practices into the worker's
 // prompt, so the bar travels with the task.
 //
-// The practice axis only (v0): the FOUNDATIONAL floor always (no model call),
-// plus concern-tagged practices when an ANTHROPIC_API_KEY is present (one
-// reasoning call via @verevoir/recipes → @verevoir/llm). The capability axis
-// (prose→capabilities via the embedding bin) is deliberately left out here — it
-// pulls a heavy local embedder, a separate placement decision.
+// Selection model (STDIO-348). The floor ALWAYS comes back in full, no model
+// call. Concern practices are selected by whoever has the context to do it well:
+//   • Default (catalogue) — return the floor plus a MENU of the concern
+//     practices (id + one-line `Protects:` blurb). A capable coordinator sees
+//     the whole task, so it narrows the menu itself and calls back with
+//     `concerns: [...]` to pull the bodies. No key, no reasoning call, and it
+//     out-selects an isolated classifier that only sees a prose blurb.
+//   • `concerns: [...]` — pull the floor plus exactly those concern bodies: a
+//     complete frame the coordinator can also inject into a worker.
+//   • `autoTag` — for a weak/headless top of stack with no coordinator to lean
+//     on: select concern practices in-MCP via the reasoning provider (needs its
+//     key). This is the only path that needs a key, and STDIO-348 v2 (embeddings
+//     facet-narrow) aims to retire even it.
+// The capability axis (prose→capabilities via the embedding bin) rides alongside
+// whichever mode, advisory, when an embeddings endpoint is configured.
 
 // The guardrails corpus practices are read from. Canonical by default; override
 // for a fork or a per-project corpus (mirrors the skills loader).
@@ -124,6 +134,79 @@ export function renderFrame(loaded: LoadedPractice[], ids: string[], note: strin
   const missing = ids.filter((id) => !loaded.some((p) => p.id === id));
   const tail = missing.length > 0 ? `\n\n(Provisioned but unreadable: ${missing.join(', ')}.)` : '';
   return `${header}\n\n${blocks}${tail}`;
+}
+
+// ── Concern menu (STDIO-348) ────────────────────────────────────────────────
+// The catalogue a capable coordinator narrows over: every non-floor practice as
+// id + its one-line `Protects:` blurb. Cheap to render, and selection happens in
+// the caller (which has the whole conversation) rather than in an isolated
+// in-MCP reasoning call (which only ever saw a prose blurb — and demonstrably
+// missed literal matches, e.g. `health-endpoint-is-standard` on "wire a health
+// endpoint").
+
+/** A concern practice as it appears in the catalogue menu. */
+export interface PracticeMenuItem {
+  id: string;
+  title: string;
+  protects: string;
+}
+
+/** List every practice id in the corpus (basenames of the `.md` files), sorted.
+ * `[]` when the source is unreadable. */
+export async function listPracticeIds(sourceUrl: string = guardrailsUrl()): Promise<string[]> {
+  const resolved = await resolvePracticesDir(sourceUrl);
+  if (!resolved) return [];
+  const { adapter, env, dir } = resolved;
+  try {
+    const entries = await adapter.listFiles(env, sourceUrl, dir);
+    return (Array.isArray(entries) ? entries : [])
+      .filter((e) => e.type === 'file' && e.name.endsWith('.md'))
+      .map((e) => e.name.replace(/\.md$/, ''))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** Pull the `# Title` and the `**Protects:** …` line out of a practice body,
+ * falling back to the id / empty when a body doesn't carry them. */
+function summarisePractice(id: string, body: string): PracticeMenuItem {
+  const title = body.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? id;
+  const protects = body.match(/\*\*Protects:\*\*\s*(.+)/)?.[1]?.trim() ?? '';
+  return { id, title, protects };
+}
+
+let menuMemo: PracticeMenuItem[] | null = null;
+
+/** Test seam: drop the in-process concern-menu memo. */
+export function clearConcernMenuMemo(): void {
+  menuMemo = null;
+}
+
+/** The concern menu: every non-floor practice as id + title + `Protects` blurb,
+ * for a coordinator to pick from. Memoised per process; `[]` when unreadable. */
+export async function loadConcernMenu(
+  sourceUrl: string = guardrailsUrl()
+): Promise<PracticeMenuItem[]> {
+  if (menuMemo) return menuMemo;
+  const floor = new Set<string>(FOUNDATIONAL);
+  const ids = (await listPracticeIds(sourceUrl)).filter((id) => !floor.has(id));
+  const loaded = await loadPracticeBodies(ids, sourceUrl);
+  const menu = loaded.map((p) => summarisePractice(p.id, p.body));
+  if (menu.length > 0) menuMemo = menu;
+  return menu;
+}
+
+/** Render the concern menu — the pick-list a coordinator narrows over, with the
+ * instruction to call back for the bodies it chooses. */
+export function renderMenu(menu: PracticeMenuItem[]): string {
+  const lines = menu.map((m) => `- **${m.id}** — ${m.protects || m.title}`);
+  return (
+    `Concern practices available for this work. You see the whole task, so pick the ones ` +
+    `that apply and call \`provision({ concerns: ['id', …] })\` again to pull their full text ` +
+    `alongside the floor — a complete frame you can also hand to a worker. (You narrow more ` +
+    `accurately than an isolated classifier that sees only a prose blurb.)\n${lines.join('\n')}`
+  );
 }
 
 // ── Capability axis (STDIO-339) ─────────────────────────────────────────────
@@ -237,6 +320,15 @@ export function renderCapabilities(caps: SurfacedCapability[] | null): string | 
   );
 }
 
+/** Prepend the advisory capability section to a practices frame when prose is
+ * given and an embeddings endpoint is configured; otherwise return the frame
+ * unchanged. Capability surfacing is advisory and must never block practices. */
+async function withCapabilities(practicesText: string, prose?: string): Promise<string> {
+  if (!prose) return practicesText;
+  const capsText = renderCapabilities(await retrieveCapabilities(prose).catch(() => null));
+  return capsText ? `${capsText}\n\n===\n\n${practicesText}` : practicesText;
+}
+
 /** The reasoning provider used to concern-tag practices. Defaults to Anthropic
  * (unchanged behaviour); `AIGENCY_REASONING_PROVIDER` selects another. Each
  * provider's `chat` is interchangeable — the same `(ChatOptions) => ChatReply`
@@ -269,35 +361,82 @@ export function reasoningProvider(): {
   return { name, ...REASONING_PROVIDERS[name] };
 }
 
-/** Provision the practice frame for a piece of work. FOUNDATIONAL floor always;
- * concern-tagged practices too when the configured reasoning provider's key is
- * set (one reasoning call, on any provider). A failed tagging call degrades to
- * the floor rather than erroring — consultation is advisory and must never block
- * the work. */
-export async function provisionFrame(prose: string): Promise<string> {
-  const { name, keyEnv, load } = reasoningProvider();
-  const apiKey = process.env[keyEnv]?.trim() || null;
-  let ids: string[];
-  let note: string;
-  if (apiKey) {
-    try {
-      const { chat } = await load();
-      ids = await provisionPractices({ prose }, apiKey, 'reasoning', chat);
-      note = `concern-tagged for this work (${name})`;
-    } catch (err) {
-      ids = [...FOUNDATIONAL];
-      note = `foundational floor only — concern-tagging failed (${String(err)})`;
-    }
-  } else {
-    ids = [...FOUNDATIONAL];
-    note = `foundational floor only — set ${keyEnv} to add concern-specific practices`;
+/** What a `provision` call asks for. A bare string is shorthand for
+ * `{ prose }` (the default catalogue), so existing callers keep working. */
+export interface ProvisionRequest {
+  /** Prose description of the work. Optional — the default catalogue needs none.
+   * Used to surface advisory capabilities, and (with `autoTag`) to select. */
+  prose?: string;
+  /** Concern practice ids to pull in full, alongside the floor — the
+   * coordinator's pick after reading the catalogue menu. Returns a complete,
+   * injectable frame (floor + chosen concerns). No key, no reasoning call. */
+  concerns?: string[];
+  /** Headless / weak-executor opt-in: select concern practices in-MCP via the
+   * reasoning provider (needs its key). Leave unset if you're a capable
+   * coordinator — you get the menu and narrow it yourself. */
+  autoTag?: boolean;
+}
+
+/** Provision the practice frame for a piece of work (STDIO-348).
+ *
+ * The floor is always returned in full, with no model call. How concern
+ * practices are chosen depends on the mode:
+ *   • `concerns` given  → floor + exactly those bodies (the coordinator's pick).
+ *   • `autoTag`         → floor + concern practices selected in-MCP via the
+ *                         reasoning provider (needs its key); degrades to the
+ *                         floor on failure, never blocking the work.
+ *   • neither (default) → floor in full + the concern MENU for the coordinator
+ *                         to narrow over and call back with `concerns`.
+ * Advisory capabilities ride alongside when prose + an embeddings endpoint are
+ * present. */
+export async function provisionFrame(req: string | ProvisionRequest): Promise<string> {
+  const { prose, concerns, autoTag } =
+    typeof req === 'string' ? ({ prose: req } as ProvisionRequest) : req;
+
+  // (1) The coordinator's pick: floor + the named concerns, a complete frame it
+  // can also inject into a worker. No key, no reasoning call.
+  if (concerns && concerns.length > 0) {
+    const extra = concerns.filter((c) => !FOUNDATIONAL.includes(c));
+    const ids = [...FOUNDATIONAL, ...extra];
+    const loaded = await loadPracticeBodies(ids);
+    return withCapabilities(renderFrame(loaded, ids, 'selected for this work'), prose);
   }
-  const loaded = await loadPracticeBodies(ids);
-  const practicesText = renderFrame(loaded, ids, note);
-  // Advisory capability surfacing (embedding-only; omitted when no embeddings
-  // endpoint is configured, and never allowed to block the practices).
-  const capsText = renderCapabilities(await retrieveCapabilities(prose).catch(() => null));
-  return capsText ? `${capsText}\n\n===\n\n${practicesText}` : practicesText;
+
+  // (2) Headless / weak top of stack: select concern practices in-MCP. The one
+  // path that needs a key; degrades to the floor on any failure.
+  if (autoTag) {
+    const { name, keyEnv, load } = reasoningProvider();
+    const apiKey = process.env[keyEnv]?.trim() || null;
+    let ids: string[];
+    let note: string;
+    if (apiKey) {
+      try {
+        const { chat } = await load();
+        ids = await provisionPractices({ prose: prose ?? '' }, apiKey, 'reasoning', chat);
+        note = `concern-tagged for this work (${name})`;
+      } catch (err) {
+        ids = [...FOUNDATIONAL];
+        note = `foundational floor only — concern-tagging failed (${String(err)})`;
+      }
+    } else {
+      ids = [...FOUNDATIONAL];
+      note = `foundational floor only — set ${keyEnv} to add concern-specific practices`;
+    }
+    const loaded = await loadPracticeBodies(ids);
+    return withCapabilities(renderFrame(loaded, ids, note), prose);
+  }
+
+  // (3) Default — catalogue: floor in full, plus the concern menu for the
+  // coordinator to narrow over. No key, no reasoning call.
+  const floor = [...FOUNDATIONAL];
+  const floorText = renderFrame(
+    await loadPracticeBodies(floor),
+    floor,
+    'foundational floor — always applies'
+  );
+  const menu = await loadConcernMenu();
+  const practicesText = menu.length > 0 ? `${floorText}\n\n===\n\n${renderMenu(menu)}` : floorText;
+  return withCapabilities(practicesText, prose);
 }
 
 /** Register the `provision` tool — the triggered, one-hop "consult the bar"
@@ -307,17 +446,32 @@ export function registerProvisionTool(server: McpServer): void {
     'provision',
     {
       description:
-        "Before you implement or change code, call `provision` with a short description of the work you're about to do. It returns, in one call: the **practices your output is held to** as text (a foundational floor always, plus concern-specific practices tagged for this work), and — when an embeddings endpoint is configured — any **pre-built capabilities that may fit** the work (advisory; run them or ignore them). So you don't have to hunt the governance index. If you delegate the work to another (especially a cheaper) model, pass the returned frame in that worker's prompt: a floor worker won't fetch the bar itself, so it must travel with the task.",
+        "Before you implement or change code, call `provision` with a short description of the work. By default it returns the **foundational floor practices in full** plus a **menu of the concern practices** (each with a one-line summary): you see the whole task, so pick the ones that apply and call `provision` again with `concerns: ['id', …]` to pull their full text — a complete frame you can also hand to a worker. (You narrow more accurately than an isolated classifier.) Pass `autoTag: true` only for a weak/headless caller with no coordinator to narrow: it selects concern practices in-MCP via the reasoning provider (needs its key). It also surfaces advisory **capabilities** that may fit, when an embeddings endpoint is configured. If you delegate the work, pass the returned frame in the worker's prompt — a floor worker won't fetch the bar itself.",
       inputSchema: {
         prose: z
           .string()
+          .optional()
           .describe(
-            'A short prose description of the work about to be done — what gets classified to its applicable practices.'
+            'Short prose description of the work. Optional. Surfaces advisory capabilities, and — with autoTag — is what concern practices are selected from.'
+          ),
+        concerns: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Concern practice ids to pull in full, alongside the foundational floor — your pick after reading the catalogue menu. Returns a complete, injectable frame.'
+          ),
+        autoTag: z
+          .boolean()
+          .optional()
+          .describe(
+            'Headless / weak-executor opt-in: select concern practices in-MCP via the reasoning provider (needs its key). Leave unset if you are a capable coordinator — you get the menu and narrow it yourself.'
           ),
       },
     },
-    async ({ prose }) => ({
-      content: [{ type: 'text' as const, text: await provisionFrame(prose) }],
+    async ({ prose, concerns, autoTag }) => ({
+      content: [
+        { type: 'text' as const, text: await provisionFrame({ prose, concerns, autoTag }) },
+      ],
     })
   );
 }
