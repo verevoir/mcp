@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { delegate, workerConfig, workerSummary } from '../src/tools/delegate.js';
+import {
+  delegate,
+  workerConfig,
+  workerSummary,
+  resolveWorkerModel,
+  clearWorkerModelsCache,
+} from '../src/tools/delegate.js';
 
 const ENV = ['AIGENCY_WORKER_URL', 'AIGENCY_WORKER_MODEL', 'AIGENCY_WORKER_API_KEY'];
 const saved: Record<string, string | undefined> = {};
@@ -41,6 +47,10 @@ function bodyOf(fetchMock: ReturnType<typeof okFetch>) {
     messages: { role: string; content: string }[];
   };
 }
+
+beforeEach(() => {
+  clearWorkerModelsCache();
+});
 
 describe('workerConfig', () => {
   it('defaults the URL to Ollama and trims a trailing slash', () => {
@@ -188,17 +198,64 @@ describe('workerSummary (STDIO-377)', () => {
     }
   });
 
-  it('reports no worker (and the Ollama default) when unconfigured', () => {
-    const s = workerSummary();
+  it('reports no worker (and the Ollama default) when unconfigured', async () => {
+    const s = await workerSummary(async () => null);
     expect(s).toContain('No worker is configured');
     expect(s).toContain('11434');
   });
 
-  it('reports the configured worker model and url', () => {
+  it('reports the configured worker model and url', async () => {
     process.env.AIGENCY_WORKER_MODEL = 'deepseek-chat';
     process.env.AIGENCY_WORKER_URL = 'https://api.deepseek.com';
-    const s = workerSummary();
+    const s = await workerSummary(async () => null);
     expect(s).toContain('deepseek-chat');
     expect(s).toContain('api.deepseek.com');
+  });
+
+  it('lists the models the worker serves so a coordinator can pick one per call', async () => {
+    process.env.AIGENCY_WORKER_MODEL = 'DeepSeek-V3.2';
+    process.env.AIGENCY_WORKER_URL = 'https://api.sambanova.ai/v1';
+    const s = await workerSummary(async () => ['DeepSeek-V3.2', 'Meta-Llama-3.3-70B-Instruct']);
+    expect(s).toContain('Models this worker serves');
+    expect(s).toContain('DeepSeek-V3.2');
+    expect(s).toContain('Meta-Llama-3.3-70B-Instruct');
+  });
+});
+
+describe('resolveWorkerModel (STDIO-379)', () => {
+  const served = ['DeepSeek-V3.1', 'DeepSeek-V3.2', 'Meta-Llama-3.3-70B-Instruct'];
+
+  it('passes an exact id straight through (case-insensitive)', () => {
+    expect(resolveWorkerModel('DeepSeek-V3.2', served)).toBe('DeepSeek-V3.2');
+    expect(resolveWorkerModel('deepseek-v3.2', served)).toBe('DeepSeek-V3.2');
+  });
+
+  it('resolves a loose family name to the newest served match', () => {
+    expect(resolveWorkerModel('deepseek', served)).toBe('DeepSeek-V3.2');
+    expect(resolveWorkerModel('llama', served)).toBe('Meta-Llama-3.3-70B-Instruct');
+  });
+
+  it('returns the request unchanged when nothing is served or nothing matches', () => {
+    expect(resolveWorkerModel('deepseek', null)).toBe('deepseek');
+    expect(resolveWorkerModel('mixtral', served)).toBe('mixtral');
+  });
+});
+
+describe('delegate model resolution (STDIO-379)', () => {
+  it("resolves a loose per-call model against the worker's served models", async () => {
+    setEnv('DeepSeek-V3.2', 'https://api.sambanova.ai/v1', 'sk-x');
+    // Registration caches the served models — simulate that here.
+    await workerSummary(async () => [
+      'DeepSeek-V3.1',
+      'DeepSeek-V3.2',
+      'Meta-Llama-3.3-70B-Instruct',
+    ]);
+    const fetchMock = okFetch('reviewed');
+    vi.stubGlobal('fetch', fetchMock);
+
+    await delegate({ prompt: 'review X', model: 'deepseek' }, stubFrame('FRAME'));
+
+    // The loose "deepseek" was resolved to the newest served id before the call.
+    expect(bodyOf(fetchMock).model).toBe('DeepSeek-V3.2');
   });
 });

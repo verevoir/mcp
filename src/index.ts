@@ -38,7 +38,7 @@ export async function createServer(): Promise<McpServer> {
   // The coordinator→worker connector: hand a self-contained sub-task to a
   // configured worker model (local Ollama/LM Studio, or any OpenAI-compatible
   // endpoint) and return its result.
-  registerDelegateTool(server);
+  await registerDelegateTool(server);
   // Best-effort: registers the guardrails reasoning skills as prompts. A load
   // failure (no token, source unreachable) leaves the server running with its
   // tools and no skill prompts rather than failing to start.
