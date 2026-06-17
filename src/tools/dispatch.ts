@@ -7,7 +7,9 @@ import {
   type ToolUse,
   type ToolExecutor,
   type ChatWithToolLoopResult,
+  type TokenUsage,
 } from '@verevoir/llm';
+import { meterFooter, roundUsage, type MeterMode } from '../metering.js';
 import { grepSource, warmSource, wrapWithCache } from '@verevoir/context';
 import { findSymbols } from '@verevoir/context/code';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
@@ -47,6 +49,7 @@ type ToolLoopOptions = {
     toolUses: ToolUse[];
     stopReason: string;
   }) => Promise<void>;
+  onUsage?: (usage: TokenUsage) => Promise<void>;
 };
 type ToolLoopAdapter = {
   chatWithToolLoop: (opts: ToolLoopOptions) => Promise<ChatWithToolLoopResult>;
@@ -280,7 +283,13 @@ export interface DispatchDeps {
  * plus a one-line trace of the tools it drove, or a clear message when the
  * model can't be resolved / driven. */
 export async function dispatchTask(
-  input: { prompt: string; model: string; source: string; maxIterations?: number },
+  input: {
+    prompt: string;
+    model: string;
+    source: string;
+    maxIterations?: number;
+    meter?: MeterMode;
+  },
   deps: DispatchDeps = {}
 ): Promise<string> {
   const warm = deps.warm ?? warmRegistry;
@@ -299,6 +308,8 @@ export async function dispatchTask(
     return `Provider "${entry.provider}" can't be driven as an agent (no tool loop).`;
   }
 
+  const usages: ReturnType<typeof roundUsage>[] = [];
+  const stages: string[] = [];
   const result = await adapter.chatWithToolLoop({
     systemPrompt: systemPrompt(input.source),
     turns: [{ role: 'user', content: input.prompt }],
@@ -306,15 +317,20 @@ export async function dispatchTask(
     tools: DISPATCH_TOOLS,
     executor: makeExec(input.source),
     maxIterations: input.maxIterations ?? 12,
+    onUsage: async (u) => {
+      usages.push(roundUsage(u.model, u.inputTokens, u.outputTokens));
+    },
     onIteration: async (info) => {
       const names = info.toolUses.map((u) => u.name).join(', ') || '(thinking)';
+      stages.push(names);
       progress(`round ${info.iteration}: ${names}`);
     },
   });
 
   const drove = result.toolUses.map((u) => u.name);
   const trace = drove.length ? `\n\n— drove ${drove.length} tool call(s): ${drove.join(', ')}` : '';
-  return `${result.text}${trace}`;
+  const footer = meterFooter(usages, input.meter ?? 'none', stages);
+  return `${result.text}${trace}${footer}`;
 }
 
 /** Register the `dispatch` tool — run a frontier non-Claude model as an MCP
@@ -336,9 +352,15 @@ export function registerDispatchTool(server: McpServer): void {
           .string()
           .describe('The source the worker reads from (local path, GitHub repo, or Notion url).'),
         maxIterations: z.number().optional().describe('Cap on tool-call rounds (default 12).'),
+        meter: z
+          .enum(['none', 'totals-only', 'verbose'])
+          .optional()
+          .describe(
+            'Append token + cost metering: "totals-only" = a model/class/tokens/$ table at the end; "verbose" = that plus a line per tool round. Default none.'
+          ),
       },
     },
-    async ({ prompt, model, source, maxIterations }, extra) => {
+    async ({ prompt, model, source, maxIterations, meter }, extra) => {
       // Surface live progress: stderr (server logs) + an MCP progress
       // notification to the host (best-effort — only when it passed a token).
       const meta = (extra as { _meta?: { progressToken?: string | number } } | undefined)?._meta;
@@ -362,7 +384,10 @@ export function registerDispatchTool(server: McpServer): void {
         content: [
           {
             type: 'text' as const,
-            text: await dispatchTask({ prompt, model, source, maxIterations }, { onProgress }),
+            text: await dispatchTask(
+              { prompt, model, source, maxIterations, meter },
+              { onProgress }
+            ),
           },
         ],
       };
