@@ -58,8 +58,11 @@ export async function delegate(
     provisionFrame({ prose, autoTag: true })
 ): Promise<string> {
   const cfg = workerConfig();
-  const model = input.model?.trim() || cfg.model;
-  if (!model) return NOT_CONFIGURED;
+  const requested = input.model?.trim() || cfg.model;
+  if (!requested) return NOT_CONFIGURED;
+  // Address a model loosely ("deepseek") or exactly ("DeepSeek-V3.2"); resolve
+  // against what the worker actually serves (cached at registration).
+  const model = resolveWorkerModel(requested, cachedWorkerModels());
 
   // The bar — and the capabilities — travel with the task: a worker won't fetch them
   // itself. Governed by default, so provision the worker's OWN task and prepend the
@@ -113,7 +116,68 @@ export async function delegate(
  * configured and where, so a coordinator can see the actual target rather than
  * guessing — the worker is any OpenAI-compatible endpoint, defaulting to a local
  * Ollama at 11434 when unset (STDIO-377). */
-export function workerSummary(): string {
+/** Fetch the model ids the worker advertises via its OpenAI-compatible
+ * `GET /models`, or null when unreachable / none. Lets `delegate`'s description
+ * list what the worker can actually run, so a coordinator told "use deepseek"
+ * can read the real id (e.g. `DeepSeek-V3.2`) and pass it per call. Bounded by a
+ * short timeout so a slow/unreachable worker never hangs server start-up. */
+async function fetchWorkerModels(cfg: WorkerConfig): Promise<string[] | null> {
+  try {
+    const res = await fetch(`${cfg.baseUrl}/models`, {
+      headers: cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {},
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { data?: { id?: string }[] };
+    const ids = (json.data ?? []).map((m) => m.id).filter((x): x is string => !!x);
+    return ids.length ? ids : null;
+  } catch {
+    return null;
+  }
+}
+
+// The worker's served model ids, cached when `workerSummary` runs at tool
+// registration, so `delegate` can resolve a per-call model without a second
+// round-trip. Null until registration has populated it.
+let cachedWorkerModelsList: string[] | null = null;
+
+/** The worker's served model ids cached at registration, for delegate's
+ * per-call model resolution. Null before registration runs. */
+export function cachedWorkerModels(): string[] | null {
+  return cachedWorkerModelsList;
+}
+
+/** Test seam: clear the cached worker model list. */
+export function clearWorkerModelsCache(): void {
+  cachedWorkerModelsList = null;
+}
+
+/** Resolve a requested model to one the worker actually serves, so a coordinator
+ * can address it loosely ("deepseek") or exactly ("DeepSeek-V3.2"). Exact match
+ * (case-insensitive) wins; else the served ids that contain the request, newest
+ * first — so "deepseek" picks DeepSeek-V3.2 over V3.1. Returned unchanged when
+ * nothing is served (can't improve on it) or nothing matches (let the worker
+ * decide / error). */
+export function resolveWorkerModel(requested: string, served: string[] | null): string {
+  if (!served || served.length === 0) return requested;
+  const lc = requested.toLowerCase();
+  const exact = served.find((m) => m.toLowerCase() === lc);
+  if (exact) return exact;
+  const matches = served
+    .filter((m) => m.toLowerCase().includes(lc))
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+  return matches[0] ?? requested;
+}
+
+/** A host-aware one-liner for the `delegate` description: the configured worker
+ * (model + endpoint) and — queried live at registration — the models it serves,
+ * so a coordinator can pick one per call (`model`) when asked to "use deepseek".
+ * The worker is any OpenAI-compatible endpoint, defaulting to a local Ollama at
+ * 11434 when unset (STDIO-377 / STDIO-379). `fetchModels` is injectable for
+ * tests. */
+export async function workerSummary(
+  fetchModels: (cfg: WorkerConfig) => Promise<string[] | null> = fetchWorkerModels
+): Promise<string> {
   const cfg = workerConfig();
   if (!cfg.model) {
     return (
@@ -122,20 +186,26 @@ export function workerSummary(): string {
       `OpenAI-compatible endpoint — local (Ollama / LM Studio / vLLM) or hosted (e.g. DeepSeek, SambaNova).`
     );
   }
+  const models = await fetchModels(cfg);
+  cachedWorkerModelsList = models; // cache for delegate's per-call model resolution
+  const available = models
+    ? ` Models this worker serves (pass one as \`model\` to run a task on it — e.g. when asked to "use deepseek"): ${models.join(', ')}.`
+    : '';
   return (
     `Configured worker: "${cfg.model}" at ${cfg.baseUrl} (any OpenAI-compatible endpoint; ` +
-    `override the model per call with \`model\`).`
+    `override the model per call with \`model\`).${available}`
   );
 }
 
 /** Register the `delegate` tool — the coordinator→worker connector. */
-export function registerDelegateTool(server: McpServer): void {
+export async function registerDelegateTool(server: McpServer): Promise<void> {
+  const summary = await workerSummary();
   server.registerTool(
     'delegate',
     {
       description:
-        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Returns the worker's text, or a short notice if no worker is configured for this project. " +
-        workerSummary(),
+        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. To run a task on a SPECIFIC model (e.g. the user says \"use deepseek to review this\"), pass `model` set to one of the worker's served models named in this description. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Returns the worker's text, or a short notice if no worker is configured for this project. " +
+        summary,
       inputSchema: {
         prompt: z
           .string()
@@ -146,7 +216,9 @@ export function registerDelegateTool(server: McpServer): void {
         model: z
           .string()
           .optional()
-          .describe('Override the configured worker model id for this one call.'),
+          .describe(
+            'Run this one call on a specific model instead of the configured default — pass one of the worker\'s served models named in this tool\'s description (e.g. "DeepSeek-V3.2" when asked to "use deepseek").'
+          ),
         governed: z
           .boolean()
           .optional()

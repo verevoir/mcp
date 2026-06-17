@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.29.0 — 2026-06-17
+
+- **`delegate` advertises the worker's models + resolves loose names** (STDIO-379). The `delegate` description now lists the models the configured worker actually serves — queried live via the worker's OpenAI-compatible `GET /models` at registration (cached, short timeout) — so a coordinator told _"use deepseek to review this"_ sees `DeepSeek-V3.2` in the list and can pass it. And the per-call `model` is now **resolved against that served set**, so a model can be addressed **loosely (`deepseek`) or exactly (`DeepSeek-V3.2`)**: an exact match passes straight through, a loose one picks the newest served match (`deepseek` → `DeepSeek-V3.2` over `V3.1`). No effect when the worker serves nothing reachable — the request passes through unchanged.
+
 ## 0.28.0 — 2026-06-17
 
 - **Ship the provider SDKs + advertise providers dynamically** (STDIO-377). The MCP declared six reasoning providers (STDIO-347) but shipped only `@anthropic-ai/sdk`, so `import('@verevoir/llm/<p>')` threw for deepseek/openai/samba/mistral ("Cannot find package 'openai'") and google ("@google/genai") — **five of six reasoning providers were dead on the published host** (why a coordinator "couldn't find deepseek"). Add `openai` (covers openai/deepseek/samba/mistral) + `@google/genai` (google) as dependencies so every provider loads. And make two tool descriptions **dynamic**, read at registration so they reflect the actual deployment: `provision` lists the supported reasoning providers and which are configured here (`reasoningProvidersSummary`); `delegate` reports the configured worker (model + endpoint) or that none is set, noting the worker is any OpenAI-compatible endpoint with a local Ollama default (`workerSummary`). So a coordinator discovers what's available instead of guessing.
