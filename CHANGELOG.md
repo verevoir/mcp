@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.37.0 — 2026-06-17
+
+- **Metering on `delegate` — closes the STDIO-385 follow-on** (STDIO-388). `delegate` now costs its one-shot worker call the same way `dispatch` does: it reads the `usage` field from the OpenAI-compatible chat response, warms the provider registry to price the worker's model from the catalog, and appends the `meterFooter` (`none` / `totals-only` / `verbose`), defaulting via `resolveMeterMode` / `AIGENCY_METER` with the same precedence as dispatch. The no-meter path stays cheap (no registry warm, no usage read). A worker that reports no `usage` gets a legible note — "the worker reported no token usage" — rather than a misleading $0 table, so "metered nothing" reads differently from "the worker didn't tell us". Both delegation paths are now instrumented.
+
 ## 0.36.0 — 2026-06-17
 
 - **Config-default metering — `AIGENCY_METER`** (STDIO-387). Metering (STDIO-385) was a per-call `meter` param defaulting to `none`, so verbose cost reporting meant passing it every call. `dispatch` / `dispatch_start` now read an `AIGENCY_METER` env default when the param is omitted, so a deployment can turn metering on once in the MCP server env. Precedence: explicit per-call `meter` wins → else `AIGENCY_METER` (`none` / `totals-only` / `verbose`) → else `none`. An unrecognised value (explicit or env) falls through to `none` so a typo can't silently mean something unintended. (`delegate` is still unmetered — the STDIO-385 follow-on.)

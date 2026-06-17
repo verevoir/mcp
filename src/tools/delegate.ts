@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { provisionFrame } from './provision.js';
 import { tierModel } from '../tiers.js';
+import { meterFooter, resolveMeterMode, roundUsage, type MeterMode } from '../metering.js';
+import { warmRegistry } from '../registry.js';
 import type { ModelClass, ModelConnection } from '@verevoir/llm';
 
 // DELEGATE (STDIO-345) — hand a self-contained sub-task to a configured WORKER
@@ -55,6 +57,7 @@ export async function delegate(
     system?: string;
     model?: string;
     governed?: boolean;
+    meter?: MeterMode;
   },
   provision: (prose: string) => Promise<string> = (prose) =>
     provisionFrame({ prose, autoTag: true }),
@@ -121,10 +124,32 @@ export async function delegate(
   }
   const json = (await res.json().catch(() => null)) as {
     choices?: { message?: { content?: string } }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   } | null;
   const content = json?.choices?.[0]?.message?.content;
   if (!content) return `Worker at ${url} returned no message content (model=${model}).`;
-  return content;
+  return content + (await delegateMeterFooter(model, json?.usage, resolveMeterMode(input.meter)));
+}
+
+/** The metering footer for a delegate call — a single worker round (STDIO-388).
+ * Empty for `'none'`. A worker that reports no `usage` gets a legible note
+ * rather than a misleading $0 table: "we metered nothing" must read differently
+ * from "the worker didn't tell us". Warms the provider registry so the model can
+ * be priced from the catalog (idempotent — only the first metered call pays). */
+async function delegateMeterFooter(
+  model: string,
+  usage: { prompt_tokens?: number; completion_tokens?: number } | undefined,
+  mode: MeterMode
+): Promise<string> {
+  if (mode === 'none') return '';
+  if (!usage || (usage.prompt_tokens == null && usage.completion_tokens == null)) {
+    return '\n\n— metering: the worker reported no token usage —';
+  }
+  await warmRegistry();
+  return meterFooter(
+    [roundUsage(model, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0)],
+    mode
+  );
 }
 
 /** A host-aware one-liner for the `delegate` description: whether a worker is
@@ -219,7 +244,7 @@ export async function registerDelegateTool(server: McpServer): Promise<void> {
     'delegate',
     {
       description:
-        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. To run a task on a SPECIFIC model (e.g. the user says \"use deepseek to review this\"), pass `model` set to one of the worker's served models named in this description. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Returns the worker's text, or a short notice if no worker is configured for this project. " +
+        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. To run a task on a SPECIFIC model (e.g. the user says \"use deepseek to review this\"), pass `model` set to one of the worker's served models named in this description. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Append token + cost metering with `meter` (or set it once via the AIGENCY_METER env). Returns the worker's text, or a short notice if no worker is configured for this project. " +
         summary,
       inputSchema: {
         prompt: z
@@ -240,11 +265,20 @@ export async function registerDelegateTool(server: McpServer): Promise<void> {
           .describe(
             'Default true: the worker is given the practices and capabilities its work is held to, provisioned from its own prompt. Set false only for throwaway work that needs no bar.'
           ),
+        meter: z
+          .enum(['none', 'totals-only', 'verbose'])
+          .optional()
+          .describe(
+            'Append token + cost metering to the result: "totals-only" = a model/tokens/$ table; "verbose" = same (one worker round). Omit to use the AIGENCY_METER env default (else none).'
+          ),
       },
     },
-    async ({ prompt, system, model, governed }) => ({
+    async ({ prompt, system, model, governed, meter }) => ({
       content: [
-        { type: 'text' as const, text: await delegate({ prompt, system, model, governed }) },
+        {
+          type: 'text' as const,
+          text: await delegate({ prompt, system, model, governed, meter }),
+        },
       ],
     })
   );
