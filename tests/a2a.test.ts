@@ -218,6 +218,13 @@ describe('serveA2A — HTTP surface', () => {
     return `http://127.0.0.1:${port}`;
   }
 
+  it('binds loopback (127.0.0.1) by default so the unauthenticated server is not network-exposed (STDIO-398)', async () => {
+    const server = serveA2A({ port: 0, ...fakeBackend(() => working) });
+    close = () => server.close();
+    await once(server, 'listening');
+    expect((server.address() as AddressInfo).address).toBe('127.0.0.1');
+  });
+
   it('serves the Agent Card at the well-known path', async () => {
     const base = await start(fakeBackend(() => working));
     const card = await (await fetch(`${base}/.well-known/agent.json`)).json();

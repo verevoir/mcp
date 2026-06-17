@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.39.0 — 2026-06-17
+
+- **A2A server binds loopback by default** (STDIO-398, partial). The `verevoir-a2a` server (STDIO-382) is unauthenticated, but `node http` `listen(port)` binds all interfaces (`0.0.0.0`) — so as shipped it was network-reachable, letting anyone who could reach the port submit dispatch tasks on your worker credits and read other callers' tasks. It now binds `127.0.0.1` by default (`DEFAULT_A2A_HOST`); exposing it off-loopback is an explicit opt-in via the `host` option / `HOST` env, which logs a warning. This closes the network-exposure half of the threat (from the STDIO-393 threat model, S3); authentication and opaque/unguessable task ids remain on STDIO-398.
+
 ## 0.38.0 — 2026-06-17
 
 - **Dispatch round-budget awareness** (STDIO-396, tier a). An agentic `dispatch` run could spend its whole `maxIterations` budget exploring (read/grep) and hit the cap before writing its answer — observed on a real review, which had to fall back to single-shot. The system prompt now states the round budget with the actual cap and instructs the agent to keep rounds in reserve to write, and to stop exploring and produce a complete answer as it approaches the limit. A cheap prompt-level nudge; the stronger dynamic per-round "rounds remaining" reminder (which needs `chatWithToolLoop` to inject a per-round message) is the llm-lib follow-on.

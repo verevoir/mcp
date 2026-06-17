@@ -383,10 +383,20 @@ async function readBody(req: import('node:http').IncomingMessage): Promise<strin
 export interface ServeOptions extends A2ADeps {
   port?: number;
   version?: string;
+  /** Interface to bind. Defaults to loopback (`127.0.0.1`) — the server has no
+   * authentication, so it must not be reachable off-host unless deliberately
+   * exposed. Set explicitly (e.g. `0.0.0.0`) to opt into wider exposure, and
+   * only behind your own auth/network controls (STDIO-398). */
+  host?: string;
   /** Poll interval (ms) for the SSE stream. Small by default; injectable so a
    * test can drive it fast. */
   streamIntervalMs?: number;
 }
+
+/** Default bind interface: loopback only. The A2A server is unauthenticated, so
+ * binding off-loopback would let anyone on the network submit dispatch tasks on
+ * your worker credits and read other callers' tasks. Opt in via `host`. */
+export const DEFAULT_A2A_HOST = '127.0.0.1';
 
 /**
  * Start the A2A HTTP server over the dispatch runtime. Serves the Agent Card at
@@ -414,7 +424,7 @@ export function serveA2A(opts: ServeOptions = {}): Server {
     void handlePost(req, res, service, intervalMs);
   });
 
-  if (opts.port !== undefined) server.listen(opts.port);
+  if (opts.port !== undefined) server.listen(opts.port, opts.host ?? DEFAULT_A2A_HOST);
   return server;
 }
 
