@@ -7,7 +7,11 @@ Verevoir is the front door for reading and writing files, code, and project cont
 
 ## Before you change code, consult the bar
 
-Before you implement, write, or change code, call **`provision`** with a short description of the work. It returns the **practices your output is held to** — in one call, as text, not an index to chase. Treat this as a precondition for the change, the same way writing through the MCP is: skip it and your code is judged against standards you never read. If you hand the work to another model, the practices must travel with it — a floor worker won't fetch the bar itself. The **`delegate`** tool does this for you by default (it provisions the task and carries the frame to the worker); for a sub-agent you spawn another way, pass the returned frame in its prompt yourself. (`find_governance` is still there for browsing the wider record; `provision` is the triggered shortcut for "what am I held to for _this_.")
+Before you implement, write, or change code, call **`provision`** with a short description of the work. Treat this as a precondition for the change, the same way writing through the MCP is: skip it and your code is judged against standards you never read.
+
+It returns, in one call as text, the **foundational floor practices in full** plus a **menu of the concern practices** (each a one-line summary). You see the whole task, so you narrow better than any isolated classifier: **pick the concerns that apply and call `provision` again with `concerns: ['id', …]`** to pull their full text alongside the floor — a complete frame you can also hand to a worker. (`find_governance` is still there for browsing the wider record; `provision` is the triggered shortcut for "what am I held to for _this_.")
+
+If you hand the work to another model, the bar must travel with it — a floor worker won't fetch it itself. The **`delegate`** tool does this for you by default (it provisions the worker's task and carries the frame into its prompt); for a sub-agent you spawn another way, pass a provisioned frame in its prompt yourself. A weak/headless caller with no coordinator to narrow can pass `autoTag: true` to have `provision` select the concerns in-MCP instead of returning a menu.
 
 ## One surface, auto-routed by URL
 

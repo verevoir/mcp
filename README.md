@@ -156,14 +156,17 @@ All take a `boardUrl`:
 
 Surface the project's governance — the ADRs / principles / glossary in the project record, and the **practices** (quality standards) in the guardrails corpus.
 
-| Tool              | Args         | Returns                                                                                |
-| ----------------- | ------------ | -------------------------------------------------------------------------------------- |
-| `find_governance` | `{ query? }` | A scannable, narrowable index of governance entries (title + how to `read_file` each). |
-| `provision`       | `{ prose }`  | The **practices held to** + the **capabilities that may fit**, in one call.            |
+| Tool              | Args                              | Returns                                                                                |
+| ----------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
+| `find_governance` | `{ query? }`                      | A scannable, narrowable index of governance entries (title + how to `read_file` each). |
+| `provision`       | `{ prose?, concerns?, autoTag? }` | The **practices held to** + the **capabilities that may fit**, in one call.            |
 
 `provision` reads from the guardrails corpus (override the source with `AIGENCY_GUARDRAILS_URL`).
 
-- **Practices** (the bar): always the foundational floor with no model call; when `ANTHROPIC_API_KEY` is set, concern-specific practices too, via one reasoning classification of the prose.
+- **Practices** (the bar): the foundational floor always comes back in full, with no model call. How the concern practices are chosen depends on the caller (STDIO-348):
+  - **default** — the floor plus a **menu** of the concern practices (id + one-line summary). A capable coordinator sees the whole task, so it narrows the menu itself and calls back with `concerns: ['id', …]` to pull the bodies — no key, and it out-selects an isolated classifier (which only ever sees a prose blurb).
+  - **`concerns: [...]`** — the floor plus exactly those concern bodies: a complete frame you can inject into a worker.
+  - **`autoTag: true`** — for a weak/headless caller with no coordinator to narrow: select the concerns in-MCP via the configured reasoning provider (needs its key, e.g. `ANTHROPIC_API_KEY`). `delegate` uses this for its worker. The only path that needs a key.
 - **Capabilities** (pre-built procedures, advisory): retrieved via an embedding bin when an embeddings endpoint is configured — `AIGENCY_EMBEDDINGS_API_KEY` (falls back to `OPENAI_API_KEY`), `AIGENCY_EMBEDDINGS_URL` (default OpenAI; point at any OpenAI-compatible provider — Mistral / DeepSeek / Voyage / …), `AIGENCY_EMBEDDINGS_MODEL` (default `text-embedding-3-small`). No endpoint → the capability section is omitted.
 
 Both halves degrade gracefully — an unreadable source, a failed tagging call, or a retrieval error falls back rather than erroring.

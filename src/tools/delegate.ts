@@ -54,7 +54,8 @@ export async function delegate(
     model?: string;
     governed?: boolean;
   },
-  provision: (prose: string) => Promise<string> = provisionFrame
+  provision: (prose: string) => Promise<string> = (prose) =>
+    provisionFrame({ prose, autoTag: true })
 ): Promise<string> {
   const cfg = workerConfig();
   const model = input.model?.trim() || cfg.model;
@@ -67,6 +68,10 @@ export async function delegate(
   // the prose it came from, so there's nothing to pass on or reuse. `governed: false`
   // is the escape for throwaway work. provisionFrame never throws (it degrades to the
   // foundational floor), so this can't block the call.
+  //
+  // The worker is a weak top-of-stack with no coordinator to narrow a menu, so the
+  // default provision binding uses `autoTag` — concern practices are selected in-MCP
+  // and the worker gets full bodies, not a pick-list it would ignore (STDIO-348).
   const frame = input.governed !== false ? await provision(input.prompt) : null;
   const system = [frame, input.system?.trim()].filter(Boolean).join('\n\n') || undefined;
 
