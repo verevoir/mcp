@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.30.0 — 2026-06-17
+
+- **`dispatch` — run a frontier non-Claude model as an MCP agent** (STDIO-381). The complement to `delegate`: where `delegate` is the lower-model one-shot (text-in/text-out, no tools, bar pre-attached via `governed`), `dispatch` hands a whole task to a **frontier** worker (e.g. DeepSeek on SambaNova) and lets it **drive** — a read-only toolbelt (`read_file`, `grep`, `find_symbol`, `provision`) bound to `@verevoir/llm`'s `chatWithToolLoop`, so it explores the source, pulls its own practices via `provision`, reads real code, and produces the result, instead of judging a pre-chewed prompt. `model` is a family or id (`"deepseek"`), resolved via `resolveModelByTerm` (llm 0.15.0) to a provider + class; `source` is the repo/path. **Read-only by construction** — no write / edit / delegate / dispatch handed to a worker. Caps tool rounds (default 12). The third delegation mode alongside `delegate` (lower / one-shot) and the Claude Agent tool (Claude / with-tools).
+
 ## 0.29.0 — 2026-06-17
 
 - **`delegate` advertises the worker's models + resolves loose names** (STDIO-379). The `delegate` description now lists the models the configured worker actually serves — queried live via the worker's OpenAI-compatible `GET /models` at registration (cached, short timeout) — so a coordinator told _"use deepseek to review this"_ sees `DeepSeek-V3.2` in the list and can pass it. And the per-call `model` is now **resolved against that served set**, so a model can be addressed **loosely (`deepseek`) or exactly (`DeepSeek-V3.2`)**: an exact match passes straight through, a loose one picks the newest served match (`deepseek` → `DeepSeek-V3.2` over `V3.1`). No effect when the worker serves nothing reachable — the request passes through unchanged.
