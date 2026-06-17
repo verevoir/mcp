@@ -52,6 +52,27 @@ describe('dispatchTask (STDIO-381)', () => {
     expect(opts.modelClass).toBe('extraction');
   });
 
+  it('tells the agent its round budget so it reserves rounds to write the answer (STDIO-396)', async () => {
+    const chatWithToolLoop = vi.fn(async () => ({ text: 'done', toolUses: [], toolResults: [] }));
+    await dispatchTask(
+      { prompt: 'review', model: 'deepseek', source: '/repo', maxIterations: 18 },
+      {
+        warm: async () => {},
+        resolve: () => ({ provider: 'samba', modelClass: 'extraction' }),
+        loadAdapter: async () => ({ chatWithToolLoop }) as never,
+        executorFor: () => async () => 'x',
+      }
+    );
+    const opts = (chatWithToolLoop.mock.calls[0] as unknown[])[0] as {
+      systemPrompt: string;
+      maxIterations: number;
+    };
+    // The budget is stated with the actual cap, and tells it to reserve rounds to write.
+    expect(opts.systemPrompt).toContain('18 tool-call rounds');
+    expect(opts.systemPrompt).toMatch(/reserve|approach the limit/i);
+    expect(opts.maxIterations).toBe(18);
+  });
+
   it('returns a clear message when no configured provider serves the model', async () => {
     const out = await dispatchTask(
       { prompt: 'x', model: 'nope', source: '/repo' },

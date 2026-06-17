@@ -224,7 +224,7 @@ export function makeDispatchExecutor(defaultSource: string): ToolExecutor {
   };
 }
 
-function systemPrompt(source: string): string {
+function systemPrompt(source: string, maxIterations: number): string {
   return (
     `You are an autonomous agent working on the source at: ${source}\n\n` +
     `You have tools you drive yourself — provision, read_file, grep, find_symbol, and (when the task ` +
@@ -232,8 +232,12 @@ function systemPrompt(source: string): string {
     `grep/find_symbol/read_file, and call \`provision\` with a short description of the work to get ` +
     `the practices your output is held to BEFORE you judge, recommend, or change anything — then hold ` +
     `your output to them. Make changes with write_file/edit_file only when the task asks for them. ` +
-    `When a tool needs a source and you mean the one above, you may omit sourceUrl. Produce the ` +
-    `finished work as your final message; do not ask for confirmation.`
+    `When a tool needs a source and you mean the one above, you may omit sourceUrl.\n\n` +
+    `You have at most ${maxIterations} tool-call rounds — budget them. Explore efficiently and keep ` +
+    `rounds in reserve to write the answer; do not spend your whole budget reading. As you approach ` +
+    `the limit, stop exploring and produce the finished work — a complete answer from what you have ` +
+    `beats running out of rounds mid-exploration. Produce the finished work as your final message; ` +
+    `do not ask for confirmation.`
   );
 }
 
@@ -281,13 +285,14 @@ export async function dispatchTask(
 
   const usages: ReturnType<typeof roundUsage>[] = [];
   const stages: string[] = [];
+  const maxIterations = input.maxIterations ?? 12;
   const result = await adapter.chatWithToolLoop({
-    systemPrompt: systemPrompt(input.source),
+    systemPrompt: systemPrompt(input.source, maxIterations),
     turns: [{ role: 'user', content: input.prompt }],
     modelClass: entry.modelClass ?? 'reasoning',
     tools: DISPATCH_TOOLS,
     executor: makeExec(input.source),
-    maxIterations: input.maxIterations ?? 12,
+    maxIterations,
     onUsage: async (u) => {
       usages.push(roundUsage(u.model, u.inputTokens, u.outputTokens));
     },
