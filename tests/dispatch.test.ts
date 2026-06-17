@@ -1,5 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
-import { dispatchTask, DISPATCH_TOOLS, makeDispatchExecutor } from '../src/tools/dispatch.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  dispatchTask,
+  DISPATCH_TOOLS,
+  makeDispatchExecutor,
+  startDispatch,
+  dispatchResult,
+  formatJob,
+  clearDispatchJobs,
+} from '../src/tools/dispatch.js';
 
 describe('dispatchTask (STDIO-381)', () => {
   it('resolves the model, drives the tool loop, and returns text + a tool trace', async () => {
@@ -72,5 +80,55 @@ describe('dispatchTask (STDIO-381)', () => {
   it('the executor rejects a tool that is not on the toolbelt', async () => {
     const exec = makeDispatchExecutor('/repo');
     await expect(exec({ id: '1', name: 'delegate', input: {} })).rejects.toThrow(/unknown tool/);
+  });
+});
+
+describe('async dispatch (STDIO-384)', () => {
+  beforeEach(() => clearDispatchJobs());
+
+  it('returns a handle immediately, then completes in the background with progress', async () => {
+    const run = vi.fn(async (_i, deps) => {
+      deps.onProgress?.('round 1: grep');
+      return 'final review';
+    });
+    const job = startDispatch({ prompt: 'p', model: 'deepseek', source: '/r' }, run);
+    expect(job.status).toBe('running');
+    expect(job.id).toMatch(/^disp-/);
+
+    await new Promise((r) => setImmediate(r)); // let the detached run settle
+    const polled = dispatchResult(job.id);
+    expect(polled).toMatchObject({ status: 'done', result: 'final review' });
+    expect((polled as { progress: string[] }).progress).toContain('round 1: grep');
+  });
+
+  it('reports running before the job finishes', () => {
+    let resolve!: (s: string) => void;
+    const run = vi.fn(() => new Promise<string>((res) => (resolve = res)));
+    const job = startDispatch({ prompt: 'p', model: 'm', source: '/r' }, run);
+    expect(dispatchResult(job.id)).toMatchObject({ status: 'running' });
+    resolve('cleanup');
+  });
+
+  it('captures a failure', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const job = startDispatch({ prompt: 'p', model: 'm', source: '/r' }, run);
+    await new Promise((r) => setImmediate(r));
+    const polled = dispatchResult(job.id);
+    expect(polled).toMatchObject({ status: 'failed' });
+    expect((polled as { error: string }).error).toContain('boom');
+  });
+
+  it('errors on an unknown handle', () => {
+    expect(dispatchResult('nope')).toMatchObject({ error: expect.stringContaining('nope') });
+  });
+
+  it('formatJob renders running / done / error', () => {
+    expect(formatJob({ id: 'x', status: 'running', progress: ['round 1: grep'] })).toContain(
+      'round 1: grep'
+    );
+    expect(formatJob({ id: 'x', status: 'done', progress: [], result: 'R' })).toBe('R');
+    expect(formatJob({ error: 'nope' })).toBe('nope');
   });
 });
