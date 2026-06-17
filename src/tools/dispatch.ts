@@ -333,6 +333,75 @@ export async function dispatchTask(
   return `${result.text}${trace}${footer}`;
 }
 
+// ── Async / background dispatch (STDIO-384) ─────────────────────────────────
+// A synchronous tool call is bounded by the host's request timeout, so a long
+// agentic run on a slow hosted model times out. `dispatch_start` kicks the loop
+// off detached and returns a handle immediately; `dispatch_result` polls. The
+// run pushes its progress into the job as it goes.
+
+export type DispatchInput = {
+  prompt: string;
+  model: string;
+  source: string;
+  maxIterations?: number;
+  meter?: MeterMode;
+};
+
+export interface DispatchJob {
+  id: string;
+  status: 'running' | 'done' | 'failed';
+  progress: string[];
+  result?: string;
+  error?: string;
+}
+
+const JOBS = new Map<string, DispatchJob>();
+let jobSeq = 0;
+
+/** Test seam: drop all background jobs. */
+export function clearDispatchJobs(): void {
+  JOBS.clear();
+  jobSeq = 0;
+}
+
+/** Start a dispatch run in the background; returns a handle immediately. The
+ * loop runs detached, pushing progress into the job; poll it with
+ * {@link dispatchResult}. `run` is injectable for tests. */
+export function startDispatch(
+  input: DispatchInput,
+  run: (i: DispatchInput, deps: DispatchDeps) => Promise<string> = dispatchTask
+): DispatchJob {
+  jobSeq += 1;
+  const job: DispatchJob = { id: `disp-${jobSeq}`, status: 'running', progress: [] };
+  JOBS.set(job.id, job);
+  void run(input, { onProgress: (m) => job.progress.push(m) })
+    .then((text) => {
+      job.status = 'done';
+      job.result = text;
+    })
+    .catch((e) => {
+      job.status = 'failed';
+      job.error = String(e);
+    });
+  return job;
+}
+
+/** Poll a background dispatch job by handle. */
+export function dispatchResult(handle: string): DispatchJob | { error: string } {
+  return JOBS.get(handle) ?? { error: `no dispatch job with handle "${handle}"` };
+}
+
+/** Render a polled job as text for the tool result. */
+export function formatJob(job: DispatchJob | { error: string }): string {
+  if (!('id' in job)) return job.error; // the not-found { error } case
+  if (job.status === 'running') {
+    const tail = job.progress.length ? `:\n${job.progress.join('\n')}` : ' (no progress yet)';
+    return `running — ${job.progress.length} round(s) so far${tail}`;
+  }
+  if (job.status === 'failed') return `failed: ${job.error ?? 'unknown error'}`;
+  return job.result ?? '(done, no output)';
+}
+
 /** Register the `dispatch` tool — run a frontier non-Claude model as an MCP
  * agent over a source, with a read-only toolbelt it drives itself. */
 export function registerDispatchTool(server: McpServer): void {
@@ -340,7 +409,7 @@ export function registerDispatchTool(server: McpServer): void {
     'dispatch',
     {
       description:
-        'Hand a whole task to a FRONTIER worker model (e.g. DeepSeek) and let it drive: it gets a toolbelt (read_file, grep, find_symbol, provision, and write_file/edit_file when the task calls for changes) and works autonomously over a source — exploring, pulling its own practices, reading real code, and producing or changing it. Runs can be slow (each round is a full worker call) and it emits progress as it goes. Use this (not `delegate`) when you want the worker to do the agentic work itself rather than judge a pre-chewed prompt. `model` is a family or id (e.g. "deepseek"); `source` is the repo/path it works over.',
+        'Hand a whole task to a FRONTIER worker model (e.g. DeepSeek) and let it drive: it gets a toolbelt (read_file, grep, find_symbol, provision, and write_file/edit_file when the task calls for changes) and works autonomously over a source — exploring, pulling its own practices, reading real code, and producing or changing it. Runs can be slow (each round is a full worker call) and it emits progress as it goes — for a large task on a slow/hosted model that would exceed a synchronous tool-call timeout, use `dispatch_start` (background) + `dispatch_result` (poll) instead. Use this (not `delegate`) when you want the worker to do the agentic work itself rather than judge a pre-chewed prompt. `model` is a family or id (e.g. "deepseek"); `source` is the repo/path it works over.',
       inputSchema: {
         prompt: z.string().describe('The task for the worker — what to produce.'),
         model: z
@@ -392,5 +461,52 @@ export function registerDispatchTool(server: McpServer): void {
         ],
       };
     }
+  );
+
+  server.registerTool(
+    'dispatch_start',
+    {
+      description:
+        'Start a `dispatch` run in the BACKGROUND and return a handle immediately — use this (not `dispatch`) for a large task on a slow/hosted model that would exceed a synchronous tool-call timeout. Poll the handle with `dispatch_result`. Same args as `dispatch`.',
+      inputSchema: {
+        prompt: z.string().describe('The task for the worker — what to produce.'),
+        model: z.string().describe('The worker model, by family or id (e.g. "deepseek").'),
+        source: z.string().describe('The source the worker reads from.'),
+        maxIterations: z.number().optional().describe('Cap on tool-call rounds (default 12).'),
+        meter: z
+          .enum(['none', 'totals-only', 'verbose'])
+          .optional()
+          .describe('Token + cost metering on the result (see `dispatch`). Default none.'),
+      },
+    },
+    async ({ prompt, model, source, maxIterations, meter }) => {
+      const job = startDispatch({ prompt, model, source, maxIterations, meter });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: jsonText({
+              handle: job.id,
+              status: job.status,
+              poll: 'call dispatch_result with this handle',
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  server.registerTool(
+    'dispatch_result',
+    {
+      description:
+        'Poll a background `dispatch` run by its handle (from `dispatch_start`). Returns the status (running / done / failed), the progress so far, and the result text when done.',
+      inputSchema: {
+        handle: z.string().describe('The handle returned by dispatch_start.'),
+      },
+    },
+    async ({ handle }) => ({
+      content: [{ type: 'text' as const, text: formatJob(dispatchResult(handle)) }],
+    })
   );
 }
