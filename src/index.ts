@@ -5,6 +5,7 @@ import { registerSkillPrompts } from './tools/skills.js';
 import { registerGovernanceTool } from './tools/governance.js';
 import { registerProvisionTool } from './tools/provision.js';
 import { registerDelegateTool } from './tools/delegate.js';
+import { registerDispatchTool } from './tools/dispatch.js';
 import { loadInstructions } from './instructions.js';
 import { loadManifest, composeInstructions } from './manifest.js';
 
@@ -39,6 +40,9 @@ export async function createServer(): Promise<McpServer> {
   // configured worker model (local Ollama/LM Studio, or any OpenAI-compatible
   // endpoint) and return its result.
   await registerDelegateTool(server);
+  // The frontier-worker connector: hand a whole task to a frontier model and let
+  // it drive a read-only toolbelt over a source (vs delegate's one-shot).
+  registerDispatchTool(server);
   // Best-effort: registers the guardrails reasoning skills as prompts. A load
   // failure (no token, source unreachable) leaves the server running with its
   // tools and no skill prompts rather than failing to start.
