@@ -22,6 +22,21 @@ import {
 
 export type MeterMode = 'none' | 'totals-only' | 'verbose';
 
+const METER_MODES: MeterMode[] = ['none', 'totals-only', 'verbose'];
+
+/**
+ * The effective meter mode (STDIO-387). An explicit per-call value wins;
+ * otherwise the `AIGENCY_METER` env default (config-set, e.g. in the MCP server
+ * env) applies; otherwise `none`. An unrecognised value — explicit or env —
+ * falls through to `none` so a typo can't silently mean something unintended.
+ */
+export function resolveMeterMode(explicit?: MeterMode): MeterMode {
+  if (explicit && METER_MODES.includes(explicit)) return explicit;
+  const env = process.env.AIGENCY_METER?.trim() as MeterMode | undefined;
+  if (env && METER_MODES.includes(env)) return env;
+  return 'none';
+}
+
 /** A single round's usage: model id → input/output tokens. */
 export function roundUsage(
   model: string,

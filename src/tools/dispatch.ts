@@ -9,7 +9,7 @@ import {
   type ChatWithToolLoopResult,
   type TokenUsage,
 } from '@verevoir/llm';
-import { meterFooter, roundUsage, type MeterMode } from '../metering.js';
+import { meterFooter, resolveMeterMode, roundUsage, type MeterMode } from '../metering.js';
 import { importProviderAdapter, warmRegistry } from '../registry.js';
 import { grepSource, warmSource, wrapWithCache } from '@verevoir/context';
 import { findSymbols } from '@verevoir/context/code';
@@ -300,7 +300,7 @@ export async function dispatchTask(
 
   const drove = result.toolUses.map((u) => u.name);
   const trace = drove.length ? `\n\n— drove ${drove.length} tool call(s): ${drove.join(', ')}` : '';
-  const footer = meterFooter(usages, input.meter ?? 'none', stages);
+  const footer = meterFooter(usages, resolveMeterMode(input.meter), stages);
   return `${result.text}${trace}${footer}`;
 }
 
@@ -396,7 +396,7 @@ export function registerDispatchTool(server: McpServer): void {
           .enum(['none', 'totals-only', 'verbose'])
           .optional()
           .describe(
-            'Append token + cost metering: "totals-only" = a model/class/tokens/$ table at the end; "verbose" = that plus a line per tool round. Default none.'
+            'Append token + cost metering: "totals-only" = a model/class/tokens/$ table at the end; "verbose" = that plus a line per tool round. Omit to use the AIGENCY_METER env default (else none).'
           ),
       },
     },
@@ -447,7 +447,9 @@ export function registerDispatchTool(server: McpServer): void {
         meter: z
           .enum(['none', 'totals-only', 'verbose'])
           .optional()
-          .describe('Token + cost metering on the result (see `dispatch`). Default none.'),
+          .describe(
+            'Token + cost metering on the result (see `dispatch`). Omit to use the AIGENCY_METER env default (else none).'
+          ),
       },
     },
     async ({ prompt, model, source, maxIterations, meter }) => {
