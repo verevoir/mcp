@@ -25,7 +25,7 @@ describe('dispatchTask (STDIO-381)', () => {
     expect(out).toContain('review done');
     expect(out).toContain('drove 2 tool call(s): provision, read_file');
 
-    // The worker got the read-only toolbelt, the resolved class, and a source-aware prompt.
+    // The worker got the toolbelt, the resolved class, and a source-aware prompt.
     const opts = (chatWithToolLoop.mock.calls[0] as unknown[])[0] as {
       tools: typeof DISPATCH_TOOLS;
       systemPrompt: string;
@@ -37,6 +37,8 @@ describe('dispatchTask (STDIO-381)', () => {
       'read_file',
       'grep',
       'find_symbol',
+      'write_file',
+      'edit_file',
     ]);
     expect(opts.systemPrompt).toContain('/repo');
     expect(opts.modelClass).toBe('extraction');
@@ -50,16 +52,25 @@ describe('dispatchTask (STDIO-381)', () => {
     expect(out).toContain('No configured provider serves');
   });
 
-  it('exposes a READ-ONLY toolbelt — no write / delegate / dispatch handed to a worker', () => {
+  it('exposes a read-write toolbelt — but never delegate/dispatch (no recursive delegation)', () => {
     const names = DISPATCH_TOOLS.map((t) => t.name);
-    expect(names).toEqual(['provision', 'read_file', 'grep', 'find_symbol']);
-    for (const forbidden of ['write_file', 'edit_file', 'delegate', 'dispatch']) {
+    for (const allowed of [
+      'provision',
+      'read_file',
+      'grep',
+      'find_symbol',
+      'write_file',
+      'edit_file',
+    ]) {
+      expect(names).toContain(allowed);
+    }
+    for (const forbidden of ['delegate', 'dispatch']) {
       expect(names).not.toContain(forbidden);
     }
   });
 
-  it('the executor rejects an unknown / non-allowlisted tool', async () => {
+  it('the executor rejects a tool that is not on the toolbelt', async () => {
     const exec = makeDispatchExecutor('/repo');
-    await expect(exec({ id: '1', name: 'write_file', input: {} })).rejects.toThrow(/unknown tool/);
+    await expect(exec({ id: '1', name: 'delegate', input: {} })).rejects.toThrow(/unknown tool/);
   });
 });

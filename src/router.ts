@@ -1,5 +1,6 @@
 import type { SourceAdapter } from '@verevoir/sources';
 import type { WorkflowAdapter, WorkflowEnv } from '@verevoir/workflows';
+import { execSync } from 'node:child_process';
 import { envFromProcessEnv } from '@verevoir/sources';
 import { envFromTrelloProcessEnv } from '@verevoir/workflows/trello';
 import { envFromNotionProcessEnv } from '@verevoir/workflows/notion';
@@ -42,15 +43,36 @@ export async function pickSourceAdapter(sourceUrl: string): Promise<SourceAdapte
   return fs;
 }
 
+let ghTokenChecked = false;
+/** Make the MCP "able to access gh": when `GITHUB_TOKEN` isn't set explicitly,
+ * borrow the `gh` CLI's auth token so the source adapter can read whatever
+ * private repos the user's `gh` is logged into. An explicit `GITHUB_TOKEN`
+ * always wins; the `gh` lookup is best-effort and runs once. */
+function ensureGithubToken(): void {
+  if (ghTokenChecked) return;
+  ghTokenChecked = true;
+  if (process.env.GITHUB_TOKEN?.trim()) return;
+  try {
+    const token = execSync('gh auth token', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (token) process.env.GITHUB_TOKEN = token;
+  } catch {
+    // gh not installed / not authed — leave unset; envFromProcessEnv throws 401.
+  }
+}
+
 /** Resolve the SourceEnv appropriate for the given URL. GitHub
- * sources require `GITHUB_TOKEN`; Notion sources require
- * `NOTION_API_KEY`; filesystem sources need no token. */
+ * sources require `GITHUB_TOKEN` (or the `gh` CLI's auth); Notion sources
+ * require `NOTION_API_KEY`; filesystem sources need no token. */
 export function resolveSourceEnv(sourceUrl: string): {
   token: string;
   forkOrg: string;
 } {
   const kind = classifySourceUrl(sourceUrl);
   if (kind === 'github') {
+    ensureGithubToken();
     const env = envFromProcessEnv();
     if (!env) throw Object.assign(new Error('GITHUB_TOKEN not set'), { status: 401 });
     return env;

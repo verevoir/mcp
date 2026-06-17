@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.31.0 — 2026-06-17
+
+- **`dispatch` gains write tools, gh access, and live progress** (STDIO-383).
+  1. **Read-write toolbelt** — `write_file` + `edit_file` let a frontier worker _change_ the source, not just review it (still no `delegate`/`dispatch` — no recursive delegation, and no card/board tools).
+  2. **GitHub access via the `gh` CLI** — `resolveSourceEnv` falls back to `gh auth token` when `GITHUB_TOKEN` is unset, so the MCP can read whatever private repos the user's `gh` is logged into (an explicit `GITHUB_TOKEN` still wins). Fixes the 404 on private repos a scoped token can't reach, and lets `provision` read the guardrails corpus via broad gh auth.
+  3. **Live progress** — `chatWithToolLoop`'s `onIteration` is wired to a stderr log **and** an MCP progress notification per round, so a slow run (each round is a full worker call) is observable instead of a silent wait.
+
 ## 0.30.0 — 2026-06-17
 
 - **`dispatch` — run a frontier non-Claude model as an MCP agent** (STDIO-381). The complement to `delegate`: where `delegate` is the lower-model one-shot (text-in/text-out, no tools, bar pre-attached via `governed`), `dispatch` hands a whole task to a **frontier** worker (e.g. DeepSeek on SambaNova) and lets it **drive** — a read-only toolbelt (`read_file`, `grep`, `find_symbol`, `provision`) bound to `@verevoir/llm`'s `chatWithToolLoop`, so it explores the source, pulls its own practices via `provision`, reads real code, and produces the result, instead of judging a pre-chewed prompt. `model` is a family or id (`"deepseek"`), resolved via `resolveModelByTerm` (llm 0.15.0) to a provider + class; `source` is the repo/path. **Read-only by construction** — no write / edit / delegate / dispatch handed to a worker. Caps tool rounds (default 12). The third delegation mode alongside `delegate` (lower / one-shot) and the Claude Agent tool (Claude / with-tools).

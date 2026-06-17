@@ -13,6 +13,9 @@ import { findSymbols } from '@verevoir/context/code';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 import { jsonText } from '../result.js';
 import { provisionFrame } from './provision.js';
+import { commitArgs } from './source.js';
+import { applyEdit } from '../edit.js';
+import { invalidateWrittenFile } from '../cache.js';
 
 // DISPATCH (STDIO-381) — run a FRONTIER non-Claude model as an MCP agent.
 //
@@ -39,6 +42,11 @@ type ToolLoopOptions = {
   tools: ToolDef[];
   executor: ToolExecutor;
   maxIterations?: number;
+  onIteration?: (info: {
+    iteration: number;
+    toolUses: ToolUse[];
+    stopReason: string;
+  }) => Promise<void>;
 };
 type ToolLoopAdapter = {
   chatWithToolLoop: (opts: ToolLoopOptions) => Promise<ChatWithToolLoopResult>;
@@ -82,8 +90,9 @@ const SOURCE_PROP = {
   },
 } as const;
 
-/** The READ-ONLY toolbelt the frontier worker drives. No write_file / edit_file /
- * delegate / dispatch — a worker reads and reasons, it does not mutate. */
+/** The toolbelt the frontier worker drives — read, governance, and write. It can
+ * change the source (write_file / edit_file); it cannot delegate/dispatch further
+ * or touch the card/board tools. */
 export const DISPATCH_TOOLS: ToolDef[] = [
   {
     name: 'provision',
@@ -122,6 +131,40 @@ export const DISPATCH_TOOLS: ToolDef[] = [
       required: ['name'],
     },
   },
+  {
+    name: 'write_file',
+    description:
+      "Write a file's full contents to the source. For a GitHub source, set branch + commitMessage; for a local path omit them.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        ...SOURCE_PROP,
+        path: { type: 'string', description: 'File path.' },
+        content: { type: 'string', description: 'Full file content.' },
+        branch: { type: 'string', description: 'GitHub branch to commit to (omit for local).' },
+        commitMessage: { type: 'string', description: 'GitHub commit message (omit for local).' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'edit_file',
+    description:
+      'Replace an exact oldString with newString in a file. oldString must match once unless replaceAll. For GitHub, set branch + commitMessage.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ...SOURCE_PROP,
+        path: { type: 'string', description: 'File path.' },
+        oldString: { type: 'string', description: 'Exact text to replace.' },
+        newString: { type: 'string', description: 'Replacement text.' },
+        replaceAll: { type: 'boolean', description: 'Replace every occurrence (default false).' },
+        branch: { type: 'string', description: 'GitHub branch (omit for local).' },
+        commitMessage: { type: 'string', description: 'GitHub commit message (omit for local).' },
+      },
+      required: ['path', 'oldString', 'newString'],
+    },
+  },
 ];
 
 /** Build the executor that runs the worker's tool calls in-process against the
@@ -152,6 +195,56 @@ export function makeDispatchExecutor(defaultSource: string): ToolExecutor {
           findSymbols(String(input.name), { sources: [{ sourceId: sourceUrl, version: '' }] })
         );
       }
+      case 'write_file': {
+        const adapter = await pickSourceAdapter(sourceUrl);
+        const env = resolveSourceEnv(sourceUrl);
+        const commit = commitArgs(
+          sourceUrl,
+          input.branch as string | undefined,
+          input.commitMessage as string | undefined
+        );
+        await adapter.writeFile(
+          env,
+          sourceUrl,
+          String(input.path),
+          String(input.content),
+          commit.branch,
+          commit.commitMessage
+        );
+        invalidateWrittenFile(sourceUrl, String(input.path), commit.branch);
+        return jsonText({ ok: true });
+      }
+      case 'edit_file': {
+        const adapter = await pickSourceAdapter(sourceUrl);
+        const env = resolveSourceEnv(sourceUrl);
+        const commit = commitArgs(
+          sourceUrl,
+          input.branch as string | undefined,
+          input.commitMessage as string | undefined
+        );
+        const { content } = await adapter.readFile(
+          env,
+          sourceUrl,
+          String(input.path),
+          commit.branch || undefined
+        );
+        const result = applyEdit(
+          content,
+          String(input.oldString),
+          String(input.newString),
+          Boolean(input.replaceAll)
+        );
+        await adapter.writeFile(
+          env,
+          sourceUrl,
+          String(input.path),
+          result.content,
+          commit.branch,
+          commit.commitMessage
+        );
+        invalidateWrittenFile(sourceUrl, String(input.path), commit.branch);
+        return jsonText({ ok: true, replacements: result.replacements });
+      }
       default:
         throw new Error(`unknown tool: ${use.name}`);
     }
@@ -161,12 +254,13 @@ export function makeDispatchExecutor(defaultSource: string): ToolExecutor {
 function systemPrompt(source: string): string {
   return (
     `You are an autonomous agent working on the source at: ${source}\n\n` +
-    `You have READ-ONLY tools — provision, read_file, grep, find_symbol — that you drive yourself. ` +
-    `Work the task: explore the source with grep/find_symbol/read_file, and call \`provision\` with a ` +
-    `short description of the work to get the practices your output is held to BEFORE you judge or ` +
-    `recommend anything — then hold your output to them. When a tool needs a source and you mean the ` +
-    `one above, you may omit sourceUrl. Produce the finished work as your final message; do not ask ` +
-    `for confirmation.`
+    `You have tools you drive yourself — provision, read_file, grep, find_symbol, and (when the task ` +
+    `calls for changes) write_file and edit_file. Work the task: explore the source with ` +
+    `grep/find_symbol/read_file, and call \`provision\` with a short description of the work to get ` +
+    `the practices your output is held to BEFORE you judge, recommend, or change anything — then hold ` +
+    `your output to them. Make changes with write_file/edit_file only when the task asks for them. ` +
+    `When a tool needs a source and you mean the one above, you may omit sourceUrl. Produce the ` +
+    `finished work as your final message; do not ask for confirmation.`
   );
 }
 
@@ -176,6 +270,10 @@ export interface DispatchDeps {
   loadAdapter?: (provider: string) => Promise<ToolLoopAdapter>;
   warm?: () => Promise<void>;
   executorFor?: (source: string) => ToolExecutor;
+  /** Called once per tool-loop round with a compact progress line — so a slow
+   * run is observable. Defaults to a stderr log; the tool handler also pushes
+   * an MCP progress notification to the host. */
+  onProgress?: (message: string) => void;
 }
 
 /** Run a frontier model as an agent over the source. Returns its final text
@@ -189,6 +287,7 @@ export async function dispatchTask(
   const resolve = deps.resolve ?? ((t: string) => resolveModelByTerm(t));
   const load = deps.loadAdapter ?? ((p: string) => ADAPTERS[p]?.());
   const makeExec = deps.executorFor ?? makeDispatchExecutor;
+  const progress = deps.onProgress ?? ((m: string) => console.error(`[dispatch] ${m}`));
 
   await warm();
   const entry = resolve(input.model);
@@ -207,6 +306,10 @@ export async function dispatchTask(
     tools: DISPATCH_TOOLS,
     executor: makeExec(input.source),
     maxIterations: input.maxIterations ?? 12,
+    onIteration: async (info) => {
+      const names = info.toolUses.map((u) => u.name).join(', ') || '(thinking)';
+      progress(`round ${info.iteration}: ${names}`);
+    },
   });
 
   const drove = result.toolUses.map((u) => u.name);
@@ -221,7 +324,7 @@ export function registerDispatchTool(server: McpServer): void {
     'dispatch',
     {
       description:
-        'Hand a whole task to a FRONTIER worker model (e.g. DeepSeek) and let it drive: it gets a read-only toolbelt (read_file, grep, find_symbol, provision) and works autonomously over a source — exploring, pulling its own practices, reading real code, producing the result. Use this (not `delegate`) when you want the worker to do the agentic work itself rather than judge a pre-chewed prompt. `model` is a family or id (e.g. "deepseek"); `source` is the repo/path it works over.',
+        'Hand a whole task to a FRONTIER worker model (e.g. DeepSeek) and let it drive: it gets a toolbelt (read_file, grep, find_symbol, provision, and write_file/edit_file when the task calls for changes) and works autonomously over a source — exploring, pulling its own practices, reading real code, and producing or changing it. Runs can be slow (each round is a full worker call) and it emits progress as it goes. Use this (not `delegate`) when you want the worker to do the agentic work itself rather than judge a pre-chewed prompt. `model` is a family or id (e.g. "deepseek"); `source` is the repo/path it works over.',
       inputSchema: {
         prompt: z.string().describe('The task for the worker — what to produce.'),
         model: z
@@ -235,13 +338,34 @@ export function registerDispatchTool(server: McpServer): void {
         maxIterations: z.number().optional().describe('Cap on tool-call rounds (default 12).'),
       },
     },
-    async ({ prompt, model, source, maxIterations }) => ({
-      content: [
-        {
-          type: 'text' as const,
-          text: await dispatchTask({ prompt, model, source, maxIterations }),
-        },
-      ],
-    })
+    async ({ prompt, model, source, maxIterations }, extra) => {
+      // Surface live progress: stderr (server logs) + an MCP progress
+      // notification to the host (best-effort — only when it passed a token).
+      const meta = (extra as { _meta?: { progressToken?: string | number } } | undefined)?._meta;
+      const progressToken = meta?.progressToken;
+      const send = (extra as { sendNotification?: (n: unknown) => Promise<unknown> } | undefined)
+        ?.sendNotification;
+      let n = 0;
+      const onProgress = (message: string) => {
+        n += 1;
+        console.error(`[dispatch] ${message}`);
+        if (progressToken !== undefined && send) {
+          void Promise.resolve(
+            send({
+              method: 'notifications/progress',
+              params: { progressToken, progress: n, total: maxIterations ?? 12, message },
+            })
+          ).catch(() => {});
+        }
+      };
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: await dispatchTask({ prompt, model, source, maxIterations }, { onProgress }),
+          },
+        ],
+      };
+    }
   );
 }
