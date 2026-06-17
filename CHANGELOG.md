@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.32.0 — 2026-06-17
+
+- **Metering on `dispatch` — none / totals-only / verbose** (STDIO-385). A `meter` param appends a token + cost table the same way aigency-web accounts, using `@verevoir/llm`'s per-call `TokenUsage` → `estimateCostUSD` over the catalog rate table: `totals-only` appends a total table (concrete model id + class, in/out tokens, USD price); `verbose` adds a line per tool round; `none` (default) appends nothing. The **concrete model id is what's metered/priced** — version matters here even though config names the family (STDIO-378). delegate metering is the follow-on (it needs the registry warm to price the worker's model).
+
 ## 0.31.0 — 2026-06-17
 
 - **`dispatch` gains write tools, gh access, and live progress** (STDIO-383).
