@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.38.0 — 2026-06-17
+
+- **Dispatch round-budget awareness** (STDIO-396, tier a). An agentic `dispatch` run could spend its whole `maxIterations` budget exploring (read/grep) and hit the cap before writing its answer — observed on a real review, which had to fall back to single-shot. The system prompt now states the round budget with the actual cap and instructs the agent to keep rounds in reserve to write, and to stop exploring and produce a complete answer as it approaches the limit. A cheap prompt-level nudge; the stronger dynamic per-round "rounds remaining" reminder (which needs `chatWithToolLoop` to inject a per-round message) is the llm-lib follow-on.
+
 ## 0.37.0 — 2026-06-17
 
 - **Metering on `delegate` — closes the STDIO-385 follow-on** (STDIO-388). `delegate` now costs its one-shot worker call the same way `dispatch` does: it reads the `usage` field from the OpenAI-compatible chat response, warms the provider registry to price the worker's model from the catalog, and appends the `meterFooter` (`none` / `totals-only` / `verbose`), defaulting via `resolveMeterMode` / `AIGENCY_METER` with the same precedence as dispatch. The no-meter path stays cheap (no registry warm, no usage read). A worker that reports no `usage` gets a legible note — "the worker reported no token usage" — rather than a misleading $0 table, so "metered nothing" reads differently from "the worker didn't tell us". Both delegation paths are now instrumented.
