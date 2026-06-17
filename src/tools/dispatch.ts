@@ -10,6 +10,7 @@ import {
   type TokenUsage,
 } from '@verevoir/llm';
 import { meterFooter, roundUsage, type MeterMode } from '../metering.js';
+import { importProviderAdapter, warmRegistry } from '../registry.js';
 import { grepSource, warmSource, wrapWithCache } from '@verevoir/context';
 import { findSymbols } from '@verevoir/context/code';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
@@ -54,37 +55,6 @@ type ToolLoopOptions = {
 type ToolLoopAdapter = {
   chatWithToolLoop: (opts: ToolLoopOptions) => Promise<ChatWithToolLoopResult>;
 };
-const ADAPTERS: Record<string, () => Promise<ToolLoopAdapter>> = {
-  openai: () => import('@verevoir/llm/openai') as unknown as Promise<ToolLoopAdapter>,
-  deepseek: () => import('@verevoir/llm/deepseek') as unknown as Promise<ToolLoopAdapter>,
-  samba: () => import('@verevoir/llm/samba') as unknown as Promise<ToolLoopAdapter>,
-  mistral: () => import('@verevoir/llm/mistral') as unknown as Promise<ToolLoopAdapter>,
-  anthropic: () => import('@verevoir/llm/anthropic') as unknown as Promise<ToolLoopAdapter>,
-  google: () => import('@verevoir/llm/google') as unknown as Promise<ToolLoopAdapter>,
-};
-
-let warmed = false;
-/** Import the provider adapters once so the llm catalog (which `resolveModelByTerm`
- * reads) is populated. Best-effort — an unimportable adapter is skipped. */
-async function warmRegistry(): Promise<void> {
-  if (warmed) return;
-  await Promise.all(
-    Object.values(ADAPTERS).map(async (load) => {
-      try {
-        await load();
-      } catch {
-        // skip an adapter whose SDK can't load
-      }
-    })
-  );
-  warmed = true;
-}
-
-/** Test seam: reset the warm-once latch. */
-export function resetDispatchWarm(): void {
-  warmed = false;
-}
-
 const SOURCE_PROP = {
   sourceUrl: {
     type: 'string',
@@ -294,7 +264,8 @@ export async function dispatchTask(
 ): Promise<string> {
   const warm = deps.warm ?? warmRegistry;
   const resolve = deps.resolve ?? ((t: string) => resolveModelByTerm(t));
-  const load = deps.loadAdapter ?? ((p: string) => ADAPTERS[p]?.());
+  const load =
+    deps.loadAdapter ?? ((p: string) => importProviderAdapter(p) as Promise<ToolLoopAdapter>);
   const makeExec = deps.executorFor ?? makeDispatchExecutor;
   const progress = deps.onProgress ?? ((m: string) => console.error(`[dispatch] ${m}`));
 

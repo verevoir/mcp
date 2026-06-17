@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { provisionFrame } from './provision.js';
+import { tierModel } from '../tiers.js';
+import type { ModelClass, ModelConnection } from '@verevoir/llm';
 
 // DELEGATE (STDIO-345) — hand a self-contained sub-task to a configured WORKER
 // model and return its result. The worker is any OpenAI-compatible chat
@@ -55,10 +57,23 @@ export async function delegate(
     governed?: boolean;
   },
   provision: (prose: string) => Promise<string> = (prose) =>
-    provisionFrame({ prose, autoTag: true })
+    provisionFrame({ prose, autoTag: true }),
+  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel
 ): Promise<string> {
   const cfg = workerConfig();
-  const requested = input.model?.trim() || cfg.model;
+  let baseUrl = cfg.baseUrl;
+  let apiKey = cfg.apiKey;
+  let requested = input.model?.trim() || cfg.model;
+  if (!requested) {
+    // No explicit or configured worker — fall back to the extraction-tier model
+    // (AIGENCY_MODEL_EXTRACTION), resolved by family to a real endpoint (STDIO-380).
+    const conn = await tier('extraction');
+    if (conn) {
+      baseUrl = conn.baseUrl;
+      apiKey = conn.apiKey;
+      requested = conn.modelId;
+    }
+  }
   if (!requested) return NOT_CONFIGURED;
   // Address a model loosely ("deepseek") or exactly ("DeepSeek-V3.2"); resolve
   // against what the worker actually serves (cached at registration).
@@ -82,7 +97,7 @@ export async function delegate(
     ...(system ? [{ role: 'system', content: system }] : []),
     { role: 'user', content: input.prompt },
   ];
-  const url = `${cfg.baseUrl}/chat/completions`;
+  const url = `${baseUrl}/chat/completions`;
 
   let res: Response;
   try {
@@ -90,7 +105,7 @@ export async function delegate(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...(cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}),
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
       },
       body: JSON.stringify({ model, messages }),
     });
