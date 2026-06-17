@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { delegate, workerConfig } from '../src/tools/delegate.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { delegate, workerConfig, workerSummary } from '../src/tools/delegate.js';
 
 const ENV = ['AIGENCY_WORKER_URL', 'AIGENCY_WORKER_MODEL', 'AIGENCY_WORKER_API_KEY'];
 const saved: Record<string, string | undefined> = {};
@@ -169,5 +169,36 @@ describe('delegate — governance (the frame travels with the task)', () => {
     const out = await delegate({ prompt: 'p' }, provision);
     expect(out).toContain('No worker model is configured');
     expect(provision).not.toHaveBeenCalled();
+  });
+});
+
+describe('workerSummary (STDIO-377)', () => {
+  const KEYS = ['AIGENCY_WORKER_MODEL', 'AIGENCY_WORKER_URL', 'AIGENCY_WORKER_API_KEY'];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('reports no worker (and the Ollama default) when unconfigured', () => {
+    const s = workerSummary();
+    expect(s).toContain('No worker is configured');
+    expect(s).toContain('11434');
+  });
+
+  it('reports the configured worker model and url', () => {
+    process.env.AIGENCY_WORKER_MODEL = 'deepseek-chat';
+    process.env.AIGENCY_WORKER_URL = 'https://api.deepseek.com';
+    const s = workerSummary();
+    expect(s).toContain('deepseek-chat');
+    expect(s).toContain('api.deepseek.com');
   });
 });

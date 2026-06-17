@@ -109,13 +109,33 @@ export async function delegate(
   return content;
 }
 
+/** A host-aware one-liner for the `delegate` description: whether a worker is
+ * configured and where, so a coordinator can see the actual target rather than
+ * guessing — the worker is any OpenAI-compatible endpoint, defaulting to a local
+ * Ollama at 11434 when unset (STDIO-377). */
+export function workerSummary(): string {
+  const cfg = workerConfig();
+  if (!cfg.model) {
+    return (
+      `No worker is configured on this host: set AIGENCY_WORKER_MODEL, and AIGENCY_WORKER_URL for a ` +
+      `non-local endpoint (default is local Ollama at ${DEFAULT_WORKER_URL}). The worker is any ` +
+      `OpenAI-compatible endpoint — local (Ollama / LM Studio / vLLM) or hosted (e.g. DeepSeek, SambaNova).`
+    );
+  }
+  return (
+    `Configured worker: "${cfg.model}" at ${cfg.baseUrl} (any OpenAI-compatible endpoint; ` +
+    `override the model per call with \`model\`).`
+  );
+}
+
 /** Register the `delegate` tool — the coordinator→worker connector. */
 export function registerDelegateTool(server: McpServer): void {
   server.registerTool(
     'delegate',
     {
       description:
-        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Returns the worker's text, or a short notice if no worker is configured for this project.",
+        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Returns the worker's text, or a short notice if no worker is configured for this project. " +
+        workerSummary(),
       inputSchema: {
         prompt: z
           .string()
