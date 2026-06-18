@@ -210,7 +210,7 @@ describe('serveA2A — HTTP surface', () => {
   let close: (() => void) | undefined;
   afterEach(() => close?.());
 
-  async function start(deps: A2ADeps & { streamIntervalMs?: number }) {
+  async function start(deps: A2ADeps & { streamIntervalMs?: number; authToken?: string }) {
     const server = serveA2A({ port: 0, version: '9.9.9', ...deps });
     close = () => server.close();
     await once(server, 'listening');
@@ -229,6 +229,24 @@ describe('serveA2A — HTTP surface', () => {
     const base = await start(fakeBackend(() => working));
     const card = await (await fetch(`${base}/.well-known/agent.json`)).json();
     expect(card).toMatchObject({ name: 'verevoir-dispatch', version: '9.9.9' });
+  });
+
+  it('rejects a request with a missing or wrong bearer token when authToken is set (STDIO-404)', async () => {
+    const base = await start({ ...fakeBackend(() => working), authToken: 's3cret' });
+    expect((await fetch(`${base}/.well-known/agent.json`)).status).toBe(401);
+    expect(
+      (await fetch(`${base}/.well-known/agent.json`, { headers: { authorization: 'Bearer nope' } }))
+        .status
+    ).toBe(401);
+  });
+
+  it('serves a request carrying the correct bearer token (STDIO-404)', async () => {
+    const base = await start({ ...fakeBackend(() => working), authToken: 's3cret' });
+    const res = await fetch(`${base}/.well-known/agent.json`, {
+      headers: { authorization: 'Bearer s3cret' },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).name).toBe('verevoir-dispatch');
   });
 
   it('runs a message/send → tasks/get round trip over JSON-RPC', async () => {

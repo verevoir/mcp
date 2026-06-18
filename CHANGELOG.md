@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.44.0 — 2026-06-18
+
+- **A2A bearer auth for the exposed path** (STDIO-404). When `A2A_AUTH_TOKEN` (or `serveA2A`'s `authToken`) is set, every request to the `verevoir-a2a` server — Agent Card, JSON-RPC, SSE stream — must carry `Authorization: Bearer <token>` or it's rejected **401** (distinct from a 404 or a JSON-RPC error, without revealing whether the token was missing or wrong). The compare is **constant-time** (`timingSafeEqual`) so the token can't be probed byte-by-byte. Unset = no auth, which stays safe only because the default bind is loopback (STDIO-398); the bin now **warns** when bound off-loopback with no token. The watch client (`verevoir-a2a-watch`) sends the token from the same env. Per-caller task scoping (multi-tenant isolation) is deferred — a single shared token is one trust boundary, which fits the single-deployment case.
+
 ## 0.43.0 — 2026-06-18
 
 - **Bounded dispatch job store — TTL + cap** (STDIO-398, S7 slice). The in-process background-job store (`dispatch_start`/`dispatch_result`, and the A2A server) grew without bound and never evicted finished jobs — a memory/DoS surface (threat-model S7). Jobs are now evicted once they age past a TTL (default 1h) and the store is capped (default 100), trimming oldest-first. Eviction is lazy (on insert + poll), so no background sweep; the age stamp is kept internal, off the public `DispatchJob`. Polling an evicted handle reports legibly ("…it may have expired") rather than as a bare not-found. A `setDispatchStorePolicy` test seam drives the clock/TTL/cap deterministically.

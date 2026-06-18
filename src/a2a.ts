@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import {
   startDispatch,
   dispatchResult,
@@ -388,6 +389,11 @@ export interface ServeOptions extends A2ADeps {
    * exposed. Set explicitly (e.g. `0.0.0.0`) to opt into wider exposure, and
    * only behind your own auth/network controls (STDIO-398). */
   host?: string;
+  /** Optional bearer token. When set (here or via the `A2A_AUTH_TOKEN` env),
+   * every request must carry `Authorization: Bearer <token>` or it is rejected
+   * 401 — for the deliberately-exposed path. Unset = no auth, which is safe only
+   * because the default bind is loopback (STDIO-404). */
+  authToken?: string;
   /** Poll interval (ms) for the SSE stream. Small by default; injectable so a
    * test can drive it fast. */
   streamIntervalMs?: number;
@@ -398,6 +404,17 @@ export interface ServeOptions extends A2ADeps {
  * your worker credits and read other callers' tasks. Opt in via `host`. */
 export const DEFAULT_A2A_HOST = '127.0.0.1';
 
+/** Constant-time check of an `Authorization: Bearer <token>` header against the
+ * configured token. False for a missing, wrong-length, or mismatched header —
+ * the length guard is required because `timingSafeEqual` throws on unequal
+ * lengths, and the compare is constant-time so it can't be probed byte by byte. */
+function bearerMatches(header: string | undefined, token: string): boolean {
+  if (!header) return false;
+  const expected = Buffer.from(`Bearer ${token}`);
+  const actual = Buffer.from(header);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 /**
  * Start the A2A HTTP server over the dispatch runtime. Serves the Agent Card at
  * {@link AGENT_CARD_PATH}, JSON-RPC at `POST /`, and SSE streaming for
@@ -407,8 +424,18 @@ export function serveA2A(opts: ServeOptions = {}): Server {
   const version = opts.version ?? '0.0.0';
   const service = new A2AService(opts);
   const intervalMs = opts.streamIntervalMs ?? 500;
+  const authToken = opts.authToken ?? (process.env.A2A_AUTH_TOKEN?.trim() || undefined);
 
   const server = createServer((req, res) => {
+    // When a token is configured, every request — card, JSON-RPC, stream — must
+    // present it. A 401 (distinct from a 404 or a JSON-RPC error) tells a caller
+    // it's an auth failure, without revealing whether the token was missing or
+    // merely wrong.
+    if (authToken && !bearerMatches(req.headers.authorization, authToken)) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
     const url = req.url ?? '/';
     if (req.method === 'GET' && url.startsWith(AGENT_CARD_PATH)) {
       const card = agentCard({ url: `http://${req.headers.host ?? 'localhost'}/`, version });
