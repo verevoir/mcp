@@ -1,12 +1,13 @@
 {
   "name": "@verevoir/mcp",
-  "version": "0.40.0",
+  "version": "0.41.0",
   "description": "MCP server exposing the Verevoir foundation (cached reads via @verevoir/context + workflow operations via @verevoir/workflows) as tools usable from Claude Code and any other MCP-compatible client.",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "verevoir-mcp": "./dist/bin.js",
-    "verevoir-a2a": "./dist/a2a-bin.js"
+    "verevoir-a2a": "./dist/a2a-bin.js",
+    "verevoir-a2a-watch": "./dist/a2a-watch-bin.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -32,6 +33,7 @@
     "format": "prettier --write .",
     "start": "node dist/bin.js",
     "a2a": "node dist/a2a-bin.js",
+    "a2a-watch": "node dist/a2a-watch-bin.js",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
