@@ -8,9 +8,9 @@ const board = 'https://www.notion.so/board';
 function mover(
   cards: Partial<Card>[],
   columns: Partial<Column>[]
-): CardMover & { moveCard: ReturnType<typeof vi.fn> } {
+): CardMover & { listCards: ReturnType<typeof vi.fn>; moveCard: ReturnType<typeof vi.fn> } {
   return {
-    listCards: async () => cards as Card[],
+    listCards: vi.fn(async () => cards as Card[]),
     listColumns: async () => columns as Column[],
     moveCard: vi.fn(async () => ({ ok: true })),
   };
@@ -43,6 +43,12 @@ describe('syncCard (STDIO-236)', () => {
     const r = await syncCard(m, env, board, 'STDIO-236', 'Done');
     expect(r).toEqual({ status: 'moved', cardId: 'c2', toColumnId: 'col-done' });
     expect(m.moveCard).toHaveBeenCalledWith(env, board, 'c2', 'col-done');
+  });
+
+  it('lists cards without bodies — a large board times out fetching every row', async () => {
+    const m = mover([{ id: 'c1', readableId: 'STDIO-1' }], [{ id: 'd', name: 'Done' }]);
+    await syncCard(m, env, board, 'STDIO-1', 'Done');
+    expect(m.listCards).toHaveBeenCalledWith(env, board, { includeBody: false });
   });
 
   it('matches the column name case-insensitively', async () => {
