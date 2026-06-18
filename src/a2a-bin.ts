@@ -17,7 +17,13 @@ const host = process.env.HOST?.trim() || DEFAULT_A2A_HOST;
 const version = process.env.npm_package_version ?? '0.0.0';
 
 serveA2A({ port, host, version });
-const exposed = host !== DEFAULT_A2A_HOST ? '  [WARNING: bound off-loopback, no auth]' : '';
+const authed = (process.env.A2A_AUTH_TOKEN?.trim() ?? '') !== '';
+const warn =
+  host !== DEFAULT_A2A_HOST && !authed
+    ? '  [WARNING: bound off-loopback with no A2A_AUTH_TOKEN — unauthenticated!]'
+    : authed
+      ? '  [auth: bearer token required]'
+      : '';
 process.stderr.write(
-  `verevoir-a2a: listening on http://${host}:${port}  (agent card: /.well-known/agent.json)${exposed}\n`
+  `verevoir-a2a: listening on http://${host}:${port}  (agent card: /.well-known/agent.json)${warn}\n`
 );

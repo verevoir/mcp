@@ -11,6 +11,9 @@ export interface WatchOptions {
   prompt: string;
   model: string;
   source: string;
+  /** Bearer token sent as `Authorization: Bearer <token>`. Defaults to the
+   * `A2A_AUTH_TOKEN` env; omit when the server is unauthenticated. */
+  authToken?: string;
   /** Called once per rendered line as events stream in. */
   render: (line: string) => void;
   fetchImpl?: typeof fetch;
@@ -54,9 +57,13 @@ export function formatStreamLine(r: StreamResult): string {
  */
 export async function watchA2A(opts: WatchOptions): Promise<void> {
   const doFetch = opts.fetchImpl ?? fetch;
+  const authToken = opts.authToken ?? process.env.A2A_AUTH_TOKEN?.trim();
   const res = await doFetch(`${opts.baseUrl.replace(/\/+$/, '')}/`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+    },
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
