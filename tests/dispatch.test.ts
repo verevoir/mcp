@@ -114,12 +114,21 @@ describe('async dispatch (STDIO-384)', () => {
     });
     const job = startDispatch({ prompt: 'p', model: 'deepseek', source: '/r' }, run);
     expect(job.status).toBe('running');
-    expect(job.id).toMatch(/^disp-/);
+    expect(job.id).toMatch(/^disp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
     await new Promise((r) => setImmediate(r)); // let the detached run settle
     const polled = dispatchResult(job.id);
     expect(polled).toMatchObject({ status: 'done', result: 'final review' });
     expect((polled as { progress: string[] }).progress).toContain('round 1: grep');
+  });
+
+  it('gives each job an unguessable, non-sequential id so handles cannot be enumerated (STDIO-398)', () => {
+    const run = vi.fn(async () => 'x');
+    const a = startDispatch({ prompt: 'p', model: 'm', source: '/r' }, run);
+    const b = startDispatch({ prompt: 'p', model: 'm', source: '/r' }, run);
+    expect(a.id).not.toBe('disp-1'); // not the old sequential scheme
+    expect(a.id).not.toBe(b.id);
+    expect(a.id).toMatch(/^disp-[0-9a-f-]{36}$/);
   });
 
   it('reports running before the job finishes', () => {
