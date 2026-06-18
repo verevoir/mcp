@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.41.0 — 2026-06-18
+
+- **A2A stream viewer — `verevoir-a2a-watch`** (STDIO-395). A thin client that opens an A2A `message/stream` against a running `verevoir-a2a` server and renders the dispatch's `status-update` events as they arrive — round by round — ending on the terminal (`final`) event. Turns the SSE plumbing from STDIO-382 into something watchable ("see the polling rendered over A2A"): `formatStreamLine` renders a task with its state (and its result artifact once completed) and each status-update with its progress message; `watchA2A` drives the stream and also handles the server's plain JSON-RPC rejection of a bad request rather than choking on a non-SSE body. New `verevoir-a2a-watch` bin: `MODEL=… SOURCE=… verevoir-a2a-watch "<task>"` against a `verevoir-a2a` server.
+
 ## 0.40.0 — 2026-06-17
 
 - **Opaque dispatch task ids** (STDIO-398, second slice). Background dispatch handles were sequential (`disp-1`, `disp-2`, …), so on the A2A surface a caller could guess another caller's handle and read its task (IDOR). Handles are now unguessable (`disp-<uuid>`), so they can't be enumerated. Combined with the loopback-bind default (0.39.0), the A2A IDOR is closed both by default (not network-reachable) and structurally (handles aren't guessable). Remaining on STDIO-398: bearer auth + per-caller scoping when the server is deliberately exposed, and job TTL.
