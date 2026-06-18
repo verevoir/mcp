@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.45.0 — 2026-06-18
+
+- **Deterministic board-card sync from the PR lifecycle** (STDIO-236). Card column transitions stop being a thing an agent remembers and become a scripted CI side-effect: a `card-sync` workflow moves the work-tracker card to **"In preview"** when a PR opens and to **"Done"** when it merges, keyed off the `<Namespace>-<id>` work-item id in the branch. `syncCard` (pure, tested — happy path + card-not-found + column-not-found, case-insensitive column match) reuses the existing `@verevoir/workflows` board adapter via the `verevoir-card-sync` bin; the bin is **best-effort** — any failure (missing config, unknown card, network) logs and exits 0, because board sync must never block a merge, and never echoes the token. Needs `NOTION_API_KEY` (secret) + `BOARD_URL` (var) in CI. First step of STDIO-236; the periodic reconciler (self-healing safety net) and the roll-out to the other repos follow.
+
+> Stacks on #64 (A2A auth, 0.44.0) — both off 0.43.0; merge order may need a one-line version/CHANGELOG reconcile.
+
 ## 0.43.0 — 2026-06-18
 
 - **Bounded dispatch job store — TTL + cap** (STDIO-398, S7 slice). The in-process background-job store (`dispatch_start`/`dispatch_result`, and the A2A server) grew without bound and never evicted finished jobs — a memory/DoS surface (threat-model S7). Jobs are now evicted once they age past a TTL (default 1h) and the store is capped (default 100), trimming oldest-first. Eviction is lazy (on insert + poll), so no background sweep; the age stamp is kept internal, off the public `DispatchJob`. Polling an evicted handle reports legibly ("…it may have expired") rather than as a bare not-found. A `setDispatchStorePolicy` test seam drives the clock/TTL/cap deterministically.
