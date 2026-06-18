@@ -7,6 +7,7 @@ import {
   dispatchResult,
   formatJob,
   clearDispatchJobs,
+  setDispatchStorePolicy,
 } from '../src/tools/dispatch.js';
 
 describe('dispatchTask (STDIO-381)', () => {
@@ -149,6 +150,25 @@ describe('async dispatch (STDIO-384)', () => {
     expect(a.id).not.toBe('disp-1'); // not the old sequential scheme
     expect(a.id).not.toBe(b.id);
     expect(a.id).toMatch(/^disp-[0-9a-f-]{36}$/);
+  });
+
+  it('evicts a background job once it ages past the TTL (STDIO-398)', () => {
+    let t = 1000;
+    setDispatchStorePolicy({ now: () => t, ttlMs: 5000 });
+    const job = startDispatch({ prompt: 'p', model: 'm', source: '/r' }, async () => 'x');
+    expect(dispatchResult(job.id)).not.toHaveProperty('error'); // present within the TTL
+    t += 5001; // age it past the TTL
+    expect(dispatchResult(job.id)).toMatchObject({ error: expect.stringContaining('expired') });
+  });
+
+  it('caps the store, evicting the oldest when over the limit (STDIO-398)', () => {
+    setDispatchStorePolicy({ maxJobs: 3 });
+    const ids = Array.from(
+      { length: 4 },
+      () => startDispatch({ prompt: 'p', model: 'm', source: '/r' }, async () => 'x').id
+    );
+    expect(dispatchResult(ids[0])).toMatchObject({ error: expect.stringContaining('expired') }); // oldest evicted
+    expect(dispatchResult(ids[3])).not.toHaveProperty('error'); // newest retained
   });
 
   it('reports running before the job finishes', () => {
