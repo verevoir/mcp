@@ -171,6 +171,8 @@ Surface the project's governance — the ADRs / principles / glossary in the pro
 
 Both halves degrade gracefully — an unreadable source, a failed tagging call, or a retrieval error falls back rather than erroring.
 
+Every frame is prefixed with a **corpus trust-boundary banner** (STDIO-399): the governance is injected into the model's prompt, so the banner frames it as the bar for _standards_, not a channel for commands — an instruction embedded in a practice/capability body is a poisoning _finding_ to report rather than follow. When the corpus is loaded from a non-canonical `AIGENCY_GUARDRAILS_URL`, the banner discloses that provenance.
+
 ### Delegation
 
 `delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured per project** (env); with no worker configured the tool returns a short notice rather than erroring.
