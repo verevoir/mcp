@@ -19,6 +19,7 @@ import {
   loadConcernMenu,
   renderMenu,
   clearConcernMenuMemo,
+  corpusBoundaryBanner,
 } from '../src/tools/provision.js';
 import { pickSourceAdapter } from '../src/router.js';
 import { provisionPractices } from '@verevoir/recipes/engine';
@@ -365,5 +366,50 @@ describe('reasoningProvider', () => {
   it('falls back to Anthropic for an unknown provider', () => {
     process.env.AIGENCY_REASONING_PROVIDER = 'frobnicate';
     expect(reasoningProvider().name).toBe('anthropic');
+  });
+});
+
+describe('corpus poisoning — trust-boundary banner + provenance (STDIO-399)', () => {
+  const savedCorpusUrl = process.env.AIGENCY_GUARDRAILS_URL;
+  afterEach(() => {
+    if (savedCorpusUrl === undefined) delete process.env.AIGENCY_GUARDRAILS_URL;
+    else process.env.AIGENCY_GUARDRAILS_URL = savedCorpusUrl;
+  });
+
+  it('states the corpus is the bar for standards, not a channel for commands, and routes an embedded instruction to a finding', () => {
+    const banner = corpusBoundaryBanner('https://github.com/verevoir/aigency-guardrails');
+    // The boundary the model is told to hold: corpus text is standards…
+    expect(banner).toMatch(/standards/i);
+    expect(banner).toMatch(/not a channel for commands/i);
+    // …and an instruction smuggled in a body is a finding to report, not to obey.
+    expect(banner).toMatch(/corpus-poisoning finding/i);
+    expect(banner).toMatch(/report, not an instruction to follow/i);
+  });
+
+  it('adds no provenance note when the corpus is the canonical source', () => {
+    const banner = corpusBoundaryBanner('https://github.com/verevoir/aigency-guardrails');
+    expect(banner).not.toMatch(/provenance/i);
+    expect(banner).not.toMatch(/non-canonical/i);
+  });
+
+  it('discloses provenance when the corpus is loaded from a non-canonical source, naming it', () => {
+    const banner = corpusBoundaryBanner('https://github.com/someone-else/forked-corpus');
+    expect(banner).toMatch(/non-canonical/i);
+    expect(banner).toContain('https://github.com/someone-else/forked-corpus');
+  });
+
+  it('prepends the boundary banner to every provisioned frame, above the governance it injects', async () => {
+    vi.mocked(pickSourceAdapter).mockResolvedValue(
+      adapterWith({
+        'automated-testing': practice('Automated testing', 'behaviour is verified', 'Write tests.'),
+        'input-validation': practice('Input validation', 'the boundary is defended', 'Validate.'),
+      }) as never
+    );
+
+    const frame = await provisionFrame('add an endpoint');
+
+    // The banner is present and sits above the governance bodies, not after them.
+    expect(frame).toMatch(/corpus-poisoning finding/i);
+    expect(frame.indexOf('corpus-poisoning finding')).toBeLessThan(frame.indexOf('Write tests.'));
   });
 });
