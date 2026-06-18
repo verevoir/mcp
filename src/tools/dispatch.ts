@@ -312,8 +312,16 @@ export async function dispatchTask(
 
   const drove = result.toolUses.map((u) => u.name);
   const trace = drove.length ? `\n\n— drove ${drove.length} tool call(s): ${drove.join(', ')}` : '';
+  // Egress disclosure (STDIO-397): a non-Anthropic worker means the source — which may be
+  // private — was sent to a third-party provider to do the work. Surface that boundary on
+  // every such run, so the caller can see where their code went rather than having to infer
+  // it from the model name. Silence would hide the most security-relevant fact about the run.
+  const egress =
+    entry.provider !== 'anthropic'
+      ? `\n\n— egress: this ran on "${entry.provider}", a third-party model provider, so the source content was sent outside Anthropic to it. Use an Anthropic-served worker to keep the source in-house.`
+      : '';
   const footer = meterFooter(usages, resolveMeterMode(input.meter), stages);
-  return `${result.text}${trace}${footer}`;
+  return `${result.text}${trace}${egress}${footer}`;
 }
 
 // ── Async / background dispatch (STDIO-384) ─────────────────────────────────
