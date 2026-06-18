@@ -94,6 +94,44 @@ describe('dispatchTask (STDIO-381)', () => {
     expect(prompt).toMatch(/report it as a finding/i);
   });
 
+  it('discloses egress when the worker runs on a non-Anthropic provider, so the caller sees their source left Anthropic (STDIO-397)', async () => {
+    const chatWithToolLoop = vi.fn(async () => ({
+      text: 'review done',
+      toolUses: [],
+      toolResults: [],
+    }));
+    const out = await dispatchTask(
+      { prompt: 'review', model: 'deepseek', source: '/repo' },
+      {
+        warm: async () => {},
+        resolve: () => ({ provider: 'samba', modelClass: 'extraction' }),
+        loadAdapter: async () => ({ chatWithToolLoop }) as never,
+        executorFor: () => async () => 'x',
+      }
+    );
+    expect(out).toContain('egress');
+    expect(out).toContain('samba');
+    expect(out).toMatch(/sent outside Anthropic/i);
+  });
+
+  it('adds no egress disclosure when the worker runs on Anthropic itself (STDIO-397)', async () => {
+    const chatWithToolLoop = vi.fn(async () => ({
+      text: 'review done',
+      toolUses: [],
+      toolResults: [],
+    }));
+    const out = await dispatchTask(
+      { prompt: 'review', model: 'opus', source: '/repo' },
+      {
+        warm: async () => {},
+        resolve: () => ({ provider: 'anthropic', modelClass: 'reasoning' }),
+        loadAdapter: async () => ({ chatWithToolLoop }) as never,
+        executorFor: () => async () => 'x',
+      }
+    );
+    expect(out).not.toContain('egress');
+  });
+
   it('returns a clear message when no configured provider serves the model', async () => {
     const out = await dispatchTask(
       { prompt: 'x', model: 'nope', source: '/repo' },

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.46.0 — 2026-06-18
+
+- **Egress disclosure on a non-Anthropic dispatch** (STDIO-397, transparency slice). `dispatch` can hand a whole task — including the **source**, which may be private — to a frontier worker on a third-party provider (DeepSeek on SambaNova, etc.). That the source left Anthropic is the most security-relevant fact about such a run, yet nothing surfaced it: the caller had to infer it from the model name. The result now carries an explicit **egress note** when the resolved provider isn't `anthropic` — naming the provider and stating the source was sent outside Anthropic, with the in-house alternative — and **stays silent** when the worker runs on Anthropic itself, so the disclosure is signal, not noise. A focused, legible change keyed on the already-resolved provider; the larger per-project **egress policy / consent gate** (block, or require opt-in, before private source leaves) stays on STDIO-397.
+
 ## 0.45.0 — 2026-06-18
 
 - **Deterministic board-card sync from the PR lifecycle** (STDIO-236). Card column transitions stop being a thing an agent remembers and become a scripted CI side-effect: a `card-sync` workflow moves the work-tracker card to **"In preview"** when a PR opens and to **"Done"** when it merges, keyed off the `<Namespace>-<id>` work-item id in the branch. `syncCard` (pure, tested — happy path + card-not-found + column-not-found, case-insensitive column match) reuses the existing `@verevoir/workflows` board adapter via the `verevoir-card-sync` bin; the bin is **best-effort** — any failure (missing config, unknown card, network) logs and exits 0, because board sync must never block a merge, and never echoes the token. Needs `NOTION_API_KEY` (secret) + `BOARD_URL` (var) in CI. First step of STDIO-236; the periodic reconciler (self-healing safety net) and the roll-out to the other repos follow.
