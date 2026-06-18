@@ -338,11 +338,55 @@ export interface DispatchJob {
   error?: string;
 }
 
-const JOBS = new Map<string, DispatchJob>();
+// Background jobs live in-process for the process lifetime, but bounded: each is
+// evicted once it ages past the TTL, and the store is capped so it can't grow
+// unbounded (memory / DoS — threat-model S7). Eviction is lazy (on insert + poll);
+// an in-process store this small needs no background sweep. The age stamp is kept
+// here, off the public DispatchJob, so the job shape stays clean.
+interface JobEntry {
+  job: DispatchJob;
+  createdAt: number;
+}
+const JOBS = new Map<string, JobEntry>();
 
-/** Test seam: drop all background jobs. */
+const DEFAULT_TTL_MS = 60 * 60 * 1000; // 1 hour
+const DEFAULT_MAX_JOBS = 100;
+let now: () => number = () => Date.now();
+let ttlMs = DEFAULT_TTL_MS;
+let maxJobs = DEFAULT_MAX_JOBS;
+
+/** Test seam: control the job-store clock, TTL, and cap. */
+export function setDispatchStorePolicy(p: {
+  now?: () => number;
+  ttlMs?: number;
+  maxJobs?: number;
+}): void {
+  if (p.now) now = p.now;
+  if (p.ttlMs !== undefined) ttlMs = p.ttlMs;
+  if (p.maxJobs !== undefined) maxJobs = p.maxJobs;
+}
+
+/** Test seam: drop all background jobs and reset the store policy to defaults. */
 export function clearDispatchJobs(): void {
   JOBS.clear();
+  now = () => Date.now();
+  ttlMs = DEFAULT_TTL_MS;
+  maxJobs = DEFAULT_MAX_JOBS;
+}
+
+/** Evict jobs aged past the TTL, then trim oldest-first to the cap. Lazy —
+ * called on each insert and poll, so the store can't grow without bound. */
+function evictStale(): void {
+  const cutoff = now() - ttlMs;
+  for (const [id, entry] of JOBS) {
+    if (entry.createdAt < cutoff) JOBS.delete(id);
+  }
+  // Map iterates in insertion order, so the oldest jobs are first.
+  while (JOBS.size > maxJobs) {
+    const oldest = JOBS.keys().next().value;
+    if (oldest === undefined) break;
+    JOBS.delete(oldest);
+  }
 }
 
 /** Start a dispatch run in the background; returns a handle immediately. The
@@ -355,7 +399,8 @@ export function startDispatch(
   // Unguessable, non-sequential id — a caller can't enumerate or guess another
   // job's handle (closes the A2A handle-guessing IDOR on the exposed path; STDIO-398).
   const job: DispatchJob = { id: `disp-${randomUUID()}`, status: 'running', progress: [] };
-  JOBS.set(job.id, job);
+  JOBS.set(job.id, { job, createdAt: now() });
+  evictStale();
   void run(input, { onProgress: (m) => job.progress.push(m) })
     .then((text) => {
       job.status = 'done';
@@ -370,7 +415,11 @@ export function startDispatch(
 
 /** Poll a background dispatch job by handle. */
 export function dispatchResult(handle: string): DispatchJob | { error: string } {
-  return JOBS.get(handle) ?? { error: `no dispatch job with handle "${handle}"` };
+  evictStale();
+  const entry = JOBS.get(handle);
+  return entry
+    ? entry.job
+    : { error: `no dispatch job with handle "${handle}" (it may have expired)` };
 }
 
 /** Render a polled job as text for the tool result. */
