@@ -175,6 +175,17 @@ Both halves degrade gracefully — an unreadable source, a failed tagging call, 
 
 `delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured per project** (env); with no worker configured the tool returns a short notice rather than erroring.
 
+## Board card sync (CI)
+
+The `card-sync` workflow moves a PR's work-tracker card through the board from the PR lifecycle — **opened → "In preview"**, **merged → "Done"** — keyed off the `<Namespace>-<id>` work-item id in the branch (STDIO-236). Deterministic and best-effort: an unknown card or missing config is logged and **never blocks the merge**.
+
+To activate it, set two values **at the GitHub org level** (once, not per-repo — the credential should have one holder):
+
+- **`NOTION_API_KEY`** — an org **secret**: the board's Notion integration token.
+- **`BOARD_URL`** — an org **variable**: the board's Notion database URL, e.g. `https://www.notion.so/<database-id>`.
+
+Until both are set the workflow step best-effort-skips (no token → exit 0), so it is inert and harmless.
+
 ## What this is NOT
 
 - Not a sync engine. Each tool is one operation; cross-backend mirroring lives elsewhere.

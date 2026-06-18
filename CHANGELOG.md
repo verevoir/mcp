@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.45.0 — 2026-06-18
+
+- **Deterministic board-card sync from the PR lifecycle** (STDIO-236). Card column transitions stop being a thing an agent remembers and become a scripted CI side-effect: a `card-sync` workflow moves the work-tracker card to **"In preview"** when a PR opens and to **"Done"** when it merges, keyed off the `<Namespace>-<id>` work-item id in the branch. `syncCard` (pure, tested — happy path + card-not-found + column-not-found, case-insensitive column match) reuses the existing `@verevoir/workflows` board adapter via the `verevoir-card-sync` bin; the bin is **best-effort** — any failure (missing config, unknown card, network) logs and exits 0, because board sync must never block a merge, and never echoes the token. Needs `NOTION_API_KEY` (secret) + `BOARD_URL` (var) in CI. First step of STDIO-236; the periodic reconciler (self-healing safety net) and the roll-out to the other repos follow.
+
+> Stacks on #64 (A2A auth, 0.44.0) — both off 0.43.0; merge order may need a one-line version/CHANGELOG reconcile.
+
 ## 0.44.0 — 2026-06-18
 
 - **A2A bearer auth for the exposed path** (STDIO-404). When `A2A_AUTH_TOKEN` (or `serveA2A`'s `authToken`) is set, every request to the `verevoir-a2a` server — Agent Card, JSON-RPC, SSE stream — must carry `Authorization: Bearer <token>` or it's rejected **401** (distinct from a 404 or a JSON-RPC error, without revealing whether the token was missing or wrong). The compare is **constant-time** (`timingSafeEqual`) so the token can't be probed byte-by-byte. Unset = no auth, which stays safe only because the default bind is loopback (STDIO-398); the bin now **warns** when bound off-loopback with no token. The watch client (`verevoir-a2a-watch`) sends the token from the same env. Per-caller task scoping (multi-tenant isolation) is deferred — a single shared token is one trust boundary, which fits the single-deployment case.
