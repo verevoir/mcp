@@ -122,16 +122,29 @@ All take a `sourceUrl` and route to the appropriate cached adapter:
 - `https://www.notion.so/<workspace>/<page-id>` (or any notion.so URL form) → cached Notion adapter. Pages become "files"; child pages become "subdirectories"; reads/writes traverse `path` through the page tree.
 - Absolute filesystem path (or `file://...`) → cached FS adapter.
 
-| Tool            | Args                                                     | Returns            |
-| --------------- | -------------------------------------------------------- | ------------------ |
-| `read_file`     | `{ sourceUrl, path, ref? }`                              | `{ content, sha }` |
-| `list_files`    | `{ sourceUrl, prefix?, ref? }`                           | `DirEntry[]`       |
-| `get_repo_tree` | `{ sourceUrl, ref? }`                                    | `RepoTree`         |
-| `grep`          | `{ sourceUrl, pattern, ref?, ignoreCase?, maxResults? }` | `GrepHit[]`        |
-| `find_symbol`   | `{ sourceUrl, name, ref?, kind? }`                       | `SymbolHit[]`      |
-| `write_file`    | `{ sourceUrl, path, content, branch, commitMessage }`    | `{ ok: true }`     |
+| Tool                | Args                                                     | Returns                |
+| ------------------- | -------------------------------------------------------- | ---------------------- |
+| `read_file`         | `{ sourceUrl, path, ref? }`                              | `{ content, sha }`     |
+| `list_files`        | `{ sourceUrl, prefix?, ref? }`                           | `DirEntry[]`           |
+| `get_repo_tree`     | `{ sourceUrl, ref? }`                                    | `RepoTree`             |
+| `grep`              | `{ sourceUrl, pattern, ref?, ignoreCase?, maxResults? }` | `GrepHit[]`            |
+| `find_symbol`       | `{ sourceUrl, name, ref?, kind? }`                       | `SymbolHit[]`          |
+| `write_file`        | `{ sourceUrl, path, content, branch, commitMessage }`    | `{ ok: true }`         |
+| `edit_file`         | `{ sourceUrl, path, oldString, newString, branch?, … }`  | `{ ok, replacements }` |
+| `ensure_fork`       | `{ sourceUrl }`                                          | `{ workingUrl }`       |
+| `ensure_branch`     | `{ workingUrl, branch }`                                 | `{ ok, branch }`       |
+| `open_pull_request` | `{ sourceUrl, workingUrl, branch, base, title, body }`   | `{ prUrl }`            |
 
 `grep` and `find_symbol` operate on **cached** content only — call `read_file` first on any files you want searchable. The cache is per-process, lazy-population.
+
+**Fork-isolated write flow (GitHub).** A repo is addressed by its **source URL** — its identity and the PR target. Once forked, the fork is the **working URL**: the workspace you actually read, write, branch, and commit on. The source repo is never written directly; it only ever receives a pull request from the fork — so an agent can change a repo it does **not** own _hermetically_. The shape:
+
+1. `ensure_fork(sourceUrl)` → `{ workingUrl }` — forks into the configured fork org, idempotent.
+2. `ensure_branch(workingUrl, branch)` — branch on the fork.
+3. `write_file` / `edit_file` against the **workingUrl** — the change lands on the fork.
+4. `open_pull_request(sourceUrl, workingUrl, branch, base, …)` — the cross-repo head (`<fork-owner>:branch`) is built from the working URL for you; the PR is opened against the source.
+
+For a repo you own, pass the same URL for both `sourceUrl` and `workingUrl` (a same-repo PR, no fork).
 
 ### Workflow tools (kanban / issue / objective sources)
 
