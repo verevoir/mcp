@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.50.0 — 2026-06-19
+## 0.51.0 — 2026-06-19
+
+- **`update_card` / `create_card` can set assignees** (STDIO-408, MCP half). Both tools gain an optional `assigneeIds` (the board backend's user ids), threaded to the workflow adapter's `CardPatch` / `CardCreate` (the `@verevoir/workflows` adapters already implement it — Notion `people`, Trello `idMembers`, Obsidian no-op). `update_card` keeps the no-clobber rule: an omitted `assigneeIds` leaves existing assignees untouched. This is the **write side of the work-tracker ownership model** — e.g. assign a card to the operating user when it moves to In progress — which the periodic reconciler's ownership guard (verevoir/mcp 0.48.0, STDIO-407) reads to leave another user's in-progress cards alone. Tests drive both tools through their registered handlers with a faked adapter, asserting `assigneeIds` reaches the patch/fields and that omission doesn't clobber.
 
 - **OpenTofu plan classifier — blast-radius before apply** (STDIO-413, slice 1). The first piece of the destruction-aware provisioning tools: a pure `classifyPlan` that parses a `tofu show -json` plan and classifies every resource change — `create` / `update` / `replace` / `destroy` / `read` / `no-op` — returning per-kind counts plus the **exact set of destructive addresses** (destroys + replaces) and a single `destructive` flag. `renderPlanSummary` **leads with the blast radius** (`⚠ DESTRUCTIVE — this plan DESTROYS 1 and REPLACES 1`, with the resource addresses) so a destructive plan shouts and an additive one reads clean. **Fail closed:** a plan it can't parse or a change it can't classify _throws_ rather than being read as "no destructive changes" — a malformed plan is never mistaken for a safe one. The destructive set is what a heavier, itemised `apply` authorisation must match (STDIO-414); the `tofu_plan` / `tofu_apply` tools and the provision gitops workflow build on this (STDIO-413/415).
 

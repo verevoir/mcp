@@ -127,13 +127,17 @@ export function registerWorkflowTools(server: McpServer): void {
         title: z.string().describe('Card title.'),
         body: z.string().optional().describe('Card description in Markdown.'),
         labelIds: z.array(z.string()).optional().describe('Label IDs to attach.'),
+        assigneeIds: z
+          .array(z.string())
+          .optional()
+          .describe("User IDs to assign the card to (the board backend's user ids)."),
         dueDate: z.string().optional().describe('Due date in ISO8601 format.'),
       },
     },
-    async ({ boardUrl, columnId, title, body, labelIds, dueDate }) => {
+    async ({ boardUrl, columnId, title, body, labelIds, assigneeIds, dueDate }) => {
       const adapter = await pickWorkflowAdapter(boardUrl);
       const env = resolveWorkflowEnv(boardUrl);
-      const fields: CardCreate = { title, body, labelIds, dueDate };
+      const fields: CardCreate = { title, body, labelIds, assigneeIds, dueDate };
       const result = await adapter.createCard(env, boardUrl, columnId, fields);
       return { content: [{ type: 'text', text: jsonText(result) }] };
     }
@@ -166,13 +170,26 @@ export function registerWorkflowTools(server: McpServer): void {
           .array(z.string())
           .optional()
           .describe("Replace the card's label set with these IDs."),
+        assigneeIds: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Replace the card's assignees with these user ids (the board backend's user ids). This is the write side of the work-tracker ownership model — e.g. assign a card to the operating user when it moves to In progress."
+          ),
         dueDate: z.string().optional().describe('Due date in ISO8601 format.'),
       },
     },
-    async ({ boardUrl, cardId, title, body, columnId, labelIds, dueDate }) => {
+    async ({ boardUrl, cardId, title, body, columnId, labelIds, assigneeIds, dueDate }) => {
       const adapter = await pickWorkflowAdapter(boardUrl);
       const env = resolveWorkflowEnv(boardUrl);
-      const patch = definedOnly<CardPatch>({ title, body, columnId, labelIds, dueDate });
+      const patch = definedOnly<CardPatch>({
+        title,
+        body,
+        columnId,
+        labelIds,
+        assigneeIds,
+        dueDate,
+      });
       await adapter.updateCard(env, boardUrl, cardId, patch);
       return {
         content: [{ type: 'text', text: jsonText({ ok: true }) }],
