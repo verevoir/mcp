@@ -207,6 +207,15 @@ search_start({
 
 Both results carry the full **trace** (every iteration's score and feedback, the winning output, why it stopped), so a run is auditable rather than opaque. Handles are unguessable (`loop-<uuid>`) and TTL-bounded, the same job model as `dispatch`.
 
+**Driving it from a prompt.** These are ambient tools, so you don't hand-write the JSON above — you describe the task and the bar to the coordinator in plain language and it fills in `refine_start` / `search_start`, then polls `*_result` for you and relays the best attempt. The `task` you give **is** the worker's prompt; the eval `rubric` (or `workDescription`) is how you state the bar in words. So a "loop a prompt with an eval" run is just a sentence. What the coordinator maps each phrasing to:
+
+- *"Keep refining a tagline for Acme until it's punchy and under 60 chars — stop when it's good or after 5 tries."* → `refine_start({ task: 'Write a tagline for Acme', eval: { kind: 'judge', rubric: 'punchy; under 60 characters' }, stop: { maxLoops: 5, targetScore: 0.9 } })`
+- *"Loop this refactor 6 times with mistral, judged by deepseek."* → `refine_start({ task: 'Refactor: …', model: 'mistral', eval: { kind: 'judge', rubric: '…', judgeModel: 'deepseek' }, stop: { maxLoops: 6 } })`
+- *"Try four different angles on the name and show me the best."* → `search_start({ task: 'Name …', seedCount: 4, eval: { … }, stop: { … } })`
+- *"Keep working this until it meets our practices."* → `eval: { kind: 'practices', workDescription: '…' }`
+
+Because runs are background jobs, the coordinator holds the handle and polls until done — you just see the result and its trace. (Distinct from the MCP **prompts** below: those are host-executed skill *templates*; the loops are *tools* you steer in natural language.)
+
 ## Prompts
 
 The server also registers the guardrails **reasoning skills** (`corpus/skills/*.md`) as MCP prompts. Invoking a prompt returns the skill's instructions plus your arguments as a message for your own model to execute, so a skill runs on the host's tokens. The corpus source defaults to the canonical guardrails repo (override with `AIGENCY_GUARDRAILS_URL`); loading is best-effort, so a missing token simply means no skill prompts. Requires an MCP client that supports prompts.

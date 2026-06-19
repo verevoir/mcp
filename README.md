@@ -234,6 +234,17 @@ search_start({
 
 Both results carry the full **trace** — every iteration's score and feedback, the winning output, and why it stopped (and, for search, every seed's best, not just the winner's) — so a run is auditable rather than opaque. Give `search` explicit `seeds` or a `seedCount` of generated diverse starts.
 
+**Driving it from a prompt.** These are ambient tools — you don't hand-write the JSON above. Describe the task and the bar to the coordinator in plain language and it fills in `refine_start` / `search_start`, then polls `*_result` and relays the best attempt. The `task` you give **is** the worker's prompt; the `rubric` (or `workDescription`) is how you state the bar in words — so "loop a prompt with an eval" is just a sentence:
+
+| You say                                                                                                  | The coordinator runs                                                                                                                                          |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "Refine a tagline for Acme until it's punchy and under 60 chars — stop when it's good or after 5 tries." | `refine_start({ task: 'Write a tagline for Acme', eval: { kind: 'judge', rubric: 'punchy; under 60 characters' }, stop: { maxLoops: 5, targetScore: 0.9 } })` |
+| "Loop this refactor 6 times with mistral, judged by deepseek."                                           | `refine_start({ task: 'Refactor: …', model: 'mistral', eval: { kind: 'judge', rubric: '…', judgeModel: 'deepseek' }, stop: { maxLoops: 6 } })`                |
+| "Try four angles on the name and show me the best."                                                      | `search_start({ task: 'Name …', seedCount: 4, eval: { … }, stop: { … } })`                                                                                    |
+| "Keep working this until it meets our practices."                                                        | `eval: { kind: 'practices', workDescription: '…' }`                                                                                                           |
+
+Because runs are background jobs, the coordinator holds the handle and polls until done — you just see the result and its trace. (Distinct from the MCP **prompts** above: those are host-executed skill _templates_; the loops are _tools_ you steer in natural language.)
+
 ## Board card sync (CI)
 
 The `card-sync` workflow moves a PR's work-tracker card through the board from the PR lifecycle — **opened → "In preview"**, **merged → "Done"** — keyed off the `<Namespace>-<id>` work-item id in the branch (STDIO-236). Deterministic and best-effort: an unknown card or missing config is logged and **never blocks the merge**.
