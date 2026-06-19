@@ -33,6 +33,15 @@ export function commitArgs(
   return { branch: branch ?? '', commitMessage: commitMessage ?? '' };
 }
 
+// The owner segment of a GitHub repo URL — used to build a cross-repo PR head
+// (`<owner>:<branch>`) from the working fork's URL, so a caller never hand-builds
+// the head string.
+export function ghOwner(repoUrl: string): string {
+  const m = repoUrl.replace(/\.git$/, '').match(/github\.com[/:]([^/]+)\/[^/]+/i);
+  if (!m) throw new Error(`Not a GitHub repo URL: ${repoUrl}`);
+  return m[1];
+}
+
 export function registerSourceTools(server: McpServer): void {
   // -------------------------------------------------------------------------
   // read_file
@@ -287,6 +296,83 @@ export function registerSourceTools(server: McpServer): void {
           { type: 'text', text: jsonText({ ok: true, replacements: result.replacements }) },
         ],
       };
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // ensure_fork / ensure_branch / open_pull_request — the fork-isolated write
+  // flow. A repo is addressed by its **source URL** (its identity, and the PR
+  // target). Once forked, the fork is the **working URL** — the workspace we
+  // actually read, write, branch, and commit on. The source repo is never
+  // written directly; it only ever receives a pull request from the fork. So an
+  // agent can change a repo it does NOT own hermetically. GitHub only (forks /
+  // PRs are a GitHub concept).
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    'ensure_fork',
+    {
+      description:
+        "Fork a GitHub repo into the configured fork org and return the **working URL** — the fork that becomes your workspace for this repo. Idempotent: returns the existing fork if one is already there. The repo's source URL stays its identity and the eventual pull-request target; everything you actually do — read, write, branch, commit — happens on the working URL, so a repo you do NOT own is never written directly. GitHub only. Returns { workingUrl }.",
+      inputSchema: {
+        sourceUrl: z
+          .string()
+          .describe('The GitHub repo URL to fork — the source/identity of the repo.'),
+      },
+    },
+    async ({ sourceUrl }) => {
+      const adapter = await pickSourceAdapter(sourceUrl);
+      const env = resolveSourceEnv(sourceUrl);
+      const workingUrl = await adapter.ensureFork(env, sourceUrl);
+      return { content: [{ type: 'text', text: jsonText({ workingUrl }) }] };
+    }
+  );
+
+  server.registerTool(
+    'ensure_branch',
+    {
+      description:
+        'Ensure a branch exists on a GitHub repo — created off the default branch if missing, a no-op if it already exists. Pass the **working URL** (the fork from ensure_fork) — that is what you branch and commit on. GitHub only. Returns { ok: true, branch }.',
+      inputSchema: {
+        workingUrl: z
+          .string()
+          .describe('The working URL (the fork) to create the branch on — from ensure_fork.'),
+        branch: z.string().describe('Branch name to ensure exists.'),
+      },
+    },
+    async ({ workingUrl, branch }) => {
+      const adapter = await pickSourceAdapter(workingUrl);
+      const env = resolveSourceEnv(workingUrl);
+      await adapter.ensureBranch(env, workingUrl, branch);
+      return { content: [{ type: 'text', text: jsonText({ ok: true, branch }) }] };
+    }
+  );
+
+  server.registerTool(
+    'open_pull_request',
+    {
+      description:
+        "Open a pull request on a GitHub repo and return its URL. Addressed by the repo's **source URL** (the PR target); the change lives on a `branch` on the **working URL** (the fork). The cross-repo head (`<fork-owner>:<branch>`) is built for you from the working URL, so you never hand-build it. For a same-repo change (you own the repo), pass the same URL for both source and working. GitHub only. Returns { prUrl }.",
+      inputSchema: {
+        sourceUrl: z
+          .string()
+          .describe('The repo the PR is opened against — its source URL (the target).'),
+        workingUrl: z
+          .string()
+          .describe('The working URL (the fork) the branch lives on — from ensure_fork.'),
+        branch: z.string().describe('The branch on the working URL that carries the change.'),
+        base: z.string().describe('The branch on the target to merge into (e.g. main).'),
+        title: z.string().describe('PR title.'),
+        body: z.string().describe('PR description (Markdown).'),
+      },
+    },
+    async ({ sourceUrl, workingUrl, branch, base, title, body }) => {
+      const adapter = await pickSourceAdapter(sourceUrl);
+      const env = resolveSourceEnv(sourceUrl);
+      // Same repo for source + working → a same-repo PR (head is just the
+      // branch); a real fork → a cross-repo head `<fork-owner>:<branch>`.
+      const head = workingUrl === sourceUrl ? branch : `${ghOwner(workingUrl)}:${branch}`;
+      const prUrl = await adapter.openPullRequest(env, sourceUrl, head, base, title, body);
+      return { content: [{ type: 'text', text: jsonText({ prUrl }) }] };
     }
   );
 
