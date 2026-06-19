@@ -1,4 +1,4 @@
-import type { WorkflowEnv, Card, Column } from '@verevoir/workflows';
+import type { WorkflowEnv, Card, Column, CardFilter } from '@verevoir/workflows';
 
 // Card sync (STDIO-236) — move a work-tracker card to a column from the PR
 // lifecycle, deterministically, instead of an agent remembering to do it by
@@ -9,7 +9,7 @@ import type { WorkflowEnv, Card, Column } from '@verevoir/workflows';
 /** The slice of a `@verevoir/workflows` adapter this needs — structural, so the
  * real adapter satisfies it and a test can fake just these three. */
 export interface CardMover {
-  listCards(env: WorkflowEnv, boardUrl: string): Promise<Card[]>;
+  listCards(env: WorkflowEnv, boardUrl: string, filter?: CardFilter): Promise<Card[]>;
   listColumns(env: WorkflowEnv, boardUrl: string): Promise<Column[]>;
   moveCard(
     env: WorkflowEnv,
@@ -46,7 +46,11 @@ export async function syncCard(
   readableId: string,
   toColumnName: string
 ): Promise<SyncResult> {
-  const cards = await mover.listCards(env, boardUrl);
+  // Without bodies: card-sync only needs id / readableId / columnId, and on a
+  // large Notion board fetching every card's markdown body is one API call per
+  // row — which times out (the `pages.retrieveMarkdown` timeout that silently
+  // skipped real syncs). `getCard` fetches a single body on demand if ever needed.
+  const cards = await mover.listCards(env, boardUrl, { includeBody: false });
   const card = cards.find((c) => c.readableId === readableId);
   if (!card) return { status: 'card-not-found', readableId };
 

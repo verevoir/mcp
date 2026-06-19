@@ -188,6 +188,13 @@ To activate it, set two values **at the GitHub org level** (once, not per-repo �
 
 Until both are set the workflow step best-effort-skips (no token → exit 0), so it is inert and harmless.
 
+### Periodic reconciler (self-healing)
+
+Events can be missed — a webhook drops, or a PR is **closed without merging** and strands its card. The `card-reconcile` workflow (STDIO-407) runs on a schedule (and on demand via `workflow_dispatch`): it recomputes each card's **desired** column from live PR state across the org and fixes any drift — the controller / reconcile-toward-desired-state pattern. The desired column for a work-item id is: any **open** PR → "In preview"; else any **merged** PR → "Done"; else only **closed-unmerged** PRs → "Not started". A card with no PRs is left where a human put it.
+
+- **Ownership guard.** A card sitting in **"In progress" assigned to another user** is that user's active work — the reconciler leaves it alone and logs why, rather than yanking it on PR-derived state. Set **`RECONCILE_USER_ID`** (the board user the automation acts as) so cards assigned to that user are still reconciled; cards assigned to anyone else in progress are skipped. With no `RECONCILE_USER_ID` set, any assigned in-progress card is treated as another's and left alone.
+- Same best-effort contract: a board hiccup logs and exits 0, never failing the job. Uses the same org `NOTION_API_KEY` + `BOARD_URL`, plus the CI `GITHUB_TOKEN` for the PR search.
+
 ## What this is NOT
 
 - Not a sync engine. Each tool is one operation; cross-backend mirroring lives elsewhere.
