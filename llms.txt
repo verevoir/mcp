@@ -131,17 +131,17 @@ dispatch_result({ handle })                                              → tex
 
 `delegate` posts to a configured OpenAI-compatible worker (env: `AIGENCY_WORKER_URL` default local Ollama at `:11434`, `AIGENCY_WORKER_MODEL`, `AIGENCY_WORKER_API_KEY`), falling back to the extraction-tier model when unset. The worker sees only `prompt` — put everything it needs there. Governed by default: the practices + capabilities its work is held to are provisioned from its own prompt and prepended; `governed: false` opts out. `model` runs one call on a specific served model. With no worker configured, returns a short notice rather than erroring.
 
-`dispatch` resolves `model` by family or id (e.g. "deepseek") via the registry and runs it as an agent with a curated toolbelt (`read_file`, `grep`, `find_symbol`, `provision`, `write_file`, `edit_file`) bound to a tool loop. Runs can be slow; it emits per-round progress. For a long run that would exceed a synchronous tool-call timeout, use `dispatch_start` (returns a handle immediately) + `dispatch_result` (poll by handle). A non-Anthropic worker means the source was sent to a third-party provider — `dispatch` discloses that egress on every such run. `meter` (`none` | `totals-only` | `verbose`, or the `AIGENCY_METER` env default) appends a token + cost footer.
+`dispatch` resolves `model` by family or id (e.g. "deepseek") via the registry and runs it as an agent with a curated toolbelt (`read_file`, `grep`, `find_symbol`, `provision`, `write_file`, `edit_file`) bound to a tool loop. Runs can be slow; it emits per-round progress. For a long run that would exceed a synchronous tool-call timeout, use `dispatch_start` (returns a handle immediately) + `dispatch_result` (poll by handle). A non-Anthropic worker means the source was sent to a third-party provider — `dispatch` discloses that egress on every such run. `meter` (`none` | `totals-only` | `verbose`, or the `AIGENCY_METER` env default) appends a token + cost + time footer (STDIO-436): per-model tokens, in/out direction, cache read/write tokens (priced separately so a cache hit shows as a saving), wall-clock time, and total USD. `verbose` adds a line per round.
 
 ### Loop tools (refine / search)
 
 "Ralph looping" over the worker model: keep producing an attempt, **score** it, and feed the score's feedback into the next attempt so the work *improves* across iterations instead of re-rolling. `refine` runs one improving line of attempts; `search` runs K diverse seeds — each its own refine loop — and selects the global best, so it escapes a local optimum a single line gets stuck in. Both are slow (many worker calls), so both are **background jobs**: `*_start` returns an unguessable handle immediately, `*_result` polls it.
 
 ```ts
-refine_start({ task, eval, stop, model? })                               → { handle, status, poll }
-refine_result({ handle })                                               → best attempt + score + stopReason + trace
-search_start({ task, eval, stop, model?, seeds?, seedCount?, concurrency? }) → { handle, status, poll }
-search_result({ handle })                                               → winning seed + its best + every seed's best
+refine_start({ task, eval, stop, model?, meter? })                               → { handle, status, poll }
+refine_result({ handle })                                                       → best attempt + score + stopReason + trace
+search_start({ task, eval, stop, model?, seeds?, seedCount?, concurrency?, meter? }) → { handle, status, poll }
+search_result({ handle })                                                       → winning seed + its best + every seed's best
 ```
 
 **The eval — how each attempt is scored** (`eval.kind`, score normalised to 0..1):
@@ -206,6 +206,8 @@ search_start({
 ```
 
 Both results carry the full **trace** (every iteration's score and feedback, the winning output, why it stopped), so a run is auditable rather than opaque. Handles are unguessable (`loop-<uuid>`) and TTL-bounded, the same job model as `dispatch`.
+
+**Metering.** Pass `meter` (`totals-only` | `verbose`, or the `AIGENCY_METER` env default) to append a token + cost + time footer covering the worker **step** calls — the attempt-maker that `model` selects (for `search`, summed across all seeds). It reports the STDIO-436 dimensions: wall-clock time, tokens per model, in/out direction, cache read/write tokens (priced separately, so a prompt-cache hit reads as the saving it is), and total USD cost. `verbose` adds a per-iteration line.
 
 **Driving it from a prompt.** These are ambient tools, so you don't hand-write the JSON above — you describe the task and the bar to the coordinator in plain language and it fills in `refine_start` / `search_start`, then polls `*_result` for you and relays the best attempt. The `task` you give **is** the worker's prompt; the eval `rubric` (or `workDescription`) is how you state the bar in words. So a "loop a prompt with an eval" run is just a sentence. What the coordinator maps each phrasing to:
 

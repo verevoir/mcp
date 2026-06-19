@@ -23,7 +23,7 @@ import type { RefineResult } from '../src/loop/refine.js';
  * climbing toward "DONE" so a `output.includes('DONE')` metric eventually passes.
  * Here we keep it simpler — it returns a fixed reply, and the eval decides. */
 function fixedStep(reply: string): StepCall {
-  return vi.fn(async () => reply);
+  return vi.fn(async () => ({ text: reply }));
 }
 
 describe('evaluatorFor — config validation', () => {
@@ -102,7 +102,7 @@ describe('resolveSeeds', () => {
 describe('runRefine (tool wiring, deterministic eval, fake worker)', () => {
   it('drives the worker step and scores each attempt with the chosen eval', async () => {
     const step = fixedStep('the answer is DONE');
-    const result = await runRefine(
+    const { result } = await runRefine(
       {
         task: 'finish the task',
         eval: { kind: 'deterministic', expression: "output.includes('DONE') ? 1 : 0" },
@@ -119,10 +119,10 @@ describe('runRefine (tool wiring, deterministic eval, fake worker)', () => {
 describe('runLoopSearch (tool wiring)', () => {
   it('runs each seed through the worker step and returns the best plus every seed run', async () => {
     // The worker echoes the seed hint, so a seed-specific metric picks a winner.
-    const step: StepCall = vi.fn(async ({ prompt }) =>
-      prompt.includes('robust') ? 'WIN' : 'lose'
-    );
-    const result = await runLoopSearch(
+    const step: StepCall = vi.fn(async ({ prompt }) => ({
+      text: prompt.includes('robust') ? 'WIN' : 'lose',
+    }));
+    const { result } = await runLoopSearch(
       {
         task: 'solve it',
         eval: { kind: 'deterministic', expression: "output === 'WIN' ? 1 : 0" },
@@ -148,7 +148,7 @@ describe('async loop jobs (mirrors dispatch, STDIO-398)', () => {
     };
     const job = startRefine(
       { task: 't', eval: { kind: 'judge', rubric: 'r' }, stop: { maxLoops: 1 } },
-      async () => fakeResult
+      async () => ({ result: fakeResult, meter: '' })
     );
     expect(job.status).toBe('running');
 
@@ -162,24 +162,26 @@ describe('async loop jobs (mirrors dispatch, STDIO-398)', () => {
     const a = startRefine(
       { task: 't', eval: { kind: 'judge', rubric: 'r' }, stop: { maxLoops: 1 } },
       async () => ({
-        best: { output: 'x', score: 1, iteration: 1 },
-        trace: [],
-        stoppedBy: 'maxLoops',
+        result: { best: { output: 'x', score: 1, iteration: 1 }, trace: [], stoppedBy: 'maxLoops' },
+        meter: '',
       })
     );
     const b = startLoopSearch(
       { task: 't', eval: { kind: 'judge', rubric: 'r' }, stop: { maxLoops: 1 } },
       async () => ({
-        best: {
-          seed: 's',
-          index: 0,
-          result: {
-            best: { output: 'x', score: 1, iteration: 1 },
-            trace: [],
-            stoppedBy: 'maxLoops',
+        result: {
+          best: {
+            seed: 's',
+            index: 0,
+            result: {
+              best: { output: 'x', score: 1, iteration: 1 },
+              trace: [],
+              stoppedBy: 'maxLoops',
+            },
           },
+          seedRuns: [],
         },
-        seedRuns: [],
+        meter: '',
       })
     );
     expect(a.id).not.toBe('loop-1');
@@ -199,9 +201,8 @@ describe('async loop jobs (mirrors dispatch, STDIO-398)', () => {
     const job = startRefine(
       { task: 't', eval: { kind: 'judge', rubric: 'r' }, stop: { maxLoops: 1 } },
       async () => ({
-        best: { output: 'x', score: 1, iteration: 1 },
-        trace: [],
-        stoppedBy: 'maxLoops',
+        result: { best: { output: 'x', score: 1, iteration: 1 }, trace: [], stoppedBy: 'maxLoops' },
+        meter: '',
       })
     );
     expect(loopResult(job.id)).not.toHaveProperty('error');
@@ -225,5 +226,64 @@ describe('async loop jobs (mirrors dispatch, STDIO-398)', () => {
     expect(formatLoopJob({ id: 'x', kind: 'refine', status: 'running' })).toContain('running');
     expect(formatLoopJob({ id: 'x', kind: 'refine', status: 'done', result: 'R' })).toBe('R');
     expect(formatLoopJob({ error: 'nope' })).toBe('nope');
+  });
+});
+
+describe('loop metering (STDIO-436)', () => {
+  /** A step that reports usage + time, so the meter has something to sum. */
+  const meteredStep: StepCall = vi.fn(async () => ({
+    text: 'done',
+    usage: { 'worker-x': { in: 100, out: 50 } },
+    elapsedMs: 12,
+  }));
+
+  it('sums the per-step worker usage into a meter footer when meter is set', async () => {
+    const { meter } = await runRefine(
+      {
+        task: 't',
+        eval: { kind: 'deterministic', expression: '1' },
+        stop: { maxLoops: 2 },
+        meter: 'totals-only',
+      },
+      meteredStep
+    );
+    expect(meter).toContain('metering total');
+    expect(meter).toContain('elapsed');
+  });
+
+  it('appends no footer when meter is omitted (the default is off)', async () => {
+    const { meter } = await runRefine(
+      { task: 't', eval: { kind: 'deterministic', expression: '1' }, stop: { maxLoops: 1 } },
+      meteredStep
+    );
+    expect(meter).toBe('');
+  });
+
+  it('notes legibly when the worker reported no usage rather than showing $0', async () => {
+    const noUsageStep: StepCall = vi.fn(async () => ({ text: 'done' }));
+    const { meter } = await runRefine(
+      {
+        task: 't',
+        eval: { kind: 'deterministic', expression: '1' },
+        stop: { maxLoops: 1 },
+        meter: 'totals-only',
+      },
+      noUsageStep
+    );
+    expect(meter).toContain('no token usage');
+  });
+
+  it('meters a search by summing usage across all its seeds', async () => {
+    const { meter } = await runLoopSearch(
+      {
+        task: 't',
+        eval: { kind: 'deterministic', expression: '1' },
+        stop: { maxLoops: 1 },
+        seeds: ['a', 'b', 'c'],
+        meter: 'totals-only',
+      },
+      meteredStep
+    );
+    expect(meter).toContain('metering total');
   });
 });

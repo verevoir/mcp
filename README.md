@@ -188,7 +188,7 @@ Every frame is prefixed with a **corpus trust-boundary banner** (STDIO-399): the
 
 ### Worker tools (delegate / dispatch)
 
-`delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured per project** (env); with no worker configured the tool returns a short notice rather than erroring. `dispatch` goes further: it hands a **frontier** model a read/write toolbelt it drives itself over a source (vs delegate's one-shot, no-tools call), with `dispatch_start` / `dispatch_result` for long runs that would exceed a synchronous timeout. Both take an optional `meter` (`none` | `totals-only` | `verbose`, or the `AIGENCY_METER` env default) that appends a token + cost footer.
+`delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured per project** (env); with no worker configured the tool returns a short notice rather than erroring. `dispatch` goes further: it hands a **frontier** model a read/write toolbelt it drives itself over a source (vs delegate's one-shot, no-tools call), with `dispatch_start` / `dispatch_result` for long runs that would exceed a synchronous timeout. Both take an optional `meter` (`none` | `totals-only` | `verbose`, or the `AIGENCY_METER` env default) that appends a token + cost + time footer (STDIO-436) — per-model tokens, in/out direction, cache read/write tokens (priced separately so a cache hit reads as a saving), wall-clock time, and total USD; `verbose` adds a line per round.
 
 ### Loop tools (refine / search)
 
@@ -233,6 +233,8 @@ search_start({
 ```
 
 Both results carry the full **trace** — every iteration's score and feedback, the winning output, and why it stopped (and, for search, every seed's best, not just the winner's) — so a run is auditable rather than opaque. Give `search` explicit `seeds` or a `seedCount` of generated diverse starts.
+
+Pass **`meter`** (`totals-only` | `verbose`) to append a token + cost + time footer for the worker **step** calls — the attempt-maker `model` selects (summed across all seeds for `search`): wall-clock time, per-model tokens, in/out direction, cache read/write, and total USD.
 
 **Driving it from a prompt.** These are ambient tools — you don't hand-write the JSON above. Describe the task and the bar to the coordinator in plain language and it fills in `refine_start` / `search_start`, then polls `*_result` and relays the best attempt. The `task` you give **is** the worker's prompt; the `rubric` (or `workDescription`) is how you state the bar in words — so "loop a prompt with an eval" is just a sentence:
 
