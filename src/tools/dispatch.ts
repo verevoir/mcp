@@ -293,6 +293,7 @@ export async function dispatchTask(
   const usages: ReturnType<typeof roundUsage>[] = [];
   const stages: string[] = [];
   const maxIterations = input.maxIterations ?? 12;
+  const startedAt = Date.now();
   const result = await adapter.chatWithToolLoop({
     systemPrompt: systemPrompt(input.source, maxIterations),
     turns: [{ role: 'user', content: input.prompt }],
@@ -301,7 +302,17 @@ export async function dispatchTask(
     executor: makeExec(input.source),
     maxIterations,
     onUsage: async (u) => {
-      usages.push(roundUsage(u.model, u.inputTokens, u.outputTokens));
+      // Carry cache tokens through so the meter prices a cache hit at the cache
+      // rate (the saving stays visible) rather than at the full input rate.
+      usages.push(
+        roundUsage(
+          u.model,
+          u.inputTokens,
+          u.outputTokens,
+          u.cacheReadInputTokens,
+          u.cacheCreationInputTokens
+        )
+      );
     },
     onIteration: async (info) => {
       const names = info.toolUses.map((u) => u.name).join(', ') || '(thinking)';
@@ -309,6 +320,7 @@ export async function dispatchTask(
       progress(`round ${info.iteration}: ${names}`);
     },
   });
+  const totalMs = Date.now() - startedAt;
 
   const drove = result.toolUses.map((u) => u.name);
   const trace = drove.length ? `\n\n— drove ${drove.length} tool call(s): ${drove.join(', ')}` : '';
@@ -320,7 +332,10 @@ export async function dispatchTask(
     entry.provider !== 'anthropic'
       ? `\n\n— egress: this ran on "${entry.provider}", a third-party model provider, so the source content was sent outside Anthropic to it. Use an Anthropic-served worker to keep the source in-house.`
       : '';
-  const footer = meterFooter(usages, resolveMeterMode(input.meter), stages);
+  const footer = meterFooter(usages, resolveMeterMode(input.meter), {
+    stageLabels: stages,
+    timing: { totalMs },
+  });
   return `${result.text}${trace}${egress}${footer}`;
 }
 

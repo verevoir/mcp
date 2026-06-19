@@ -1,9 +1,12 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { PerModelUsage } from '@verevoir/llm';
 import { jsonText } from '../result.js';
-import { delegate } from './delegate.js';
+import { delegate, delegateDetailed } from './delegate.js';
 import { provisionFrame } from './provision.js';
+import { warmRegistry } from '../registry.js';
+import { meterFooter, resolveMeterMode, type MeterMode } from '../metering.js';
 import {
   deterministicEval,
   modelJudgeEval,
@@ -153,12 +156,24 @@ export function refineStepPrompt(
   ].join('\n');
 }
 
-/** The worker call a refine step drives — prompt in, text out. Defaults to
- * `delegate`; injectable for tests. */
-export type StepCall = (input: { prompt: string; model?: string }) => Promise<string>;
+/** The result of one worker step: the text the loop scores, plus what the call
+ * cost — `usage` (null when the worker reported none) and wall-clock — so the
+ * tool layer can meter the run. */
+export interface StepResult {
+  text: string;
+  usage?: PerModelUsage | null;
+  elapsedMs?: number;
+}
+
+/** The worker call a refine step drives — prompt in, {@link StepResult} out.
+ * Defaults to the real worker (`delegateDetailed`); injectable for tests. */
+export type StepCall = (input: { prompt: string; model?: string }) => Promise<StepResult>;
 
 function defaultStepCall(): StepCall {
-  return ({ prompt, model }) => delegate({ prompt, model, governed: false });
+  return async ({ prompt, model }) => {
+    const r = await delegateDetailed({ prompt, model, governed: false });
+    return { text: r.text, usage: r.usage, elapsedMs: r.elapsedMs };
+  };
 }
 
 /** Build the refine `step` for a task: each call asks the worker to produce or
@@ -168,11 +183,15 @@ function makeRefineStep(
   task: string,
   model: string | undefined,
   call: StepCall,
-  seedHint?: string
+  seedHint: string | undefined,
+  record: (usage: PerModelUsage | null | undefined, elapsedMs: number) => void
 ) {
   const framedTask = seedHint ? `${task}\n\nApproach: ${seedHint}` : task;
-  return (prev?: { output: string; score: number; feedback?: string }) =>
-    call({ prompt: refineStepPrompt(framedTask, prev), model });
+  return async (prev?: { output: string; score: number; feedback?: string }) => {
+    const r = await call({ prompt: refineStepPrompt(framedTask, prev), model });
+    record(r.usage, r.elapsedMs ?? 0);
+    return r.text;
+  };
 }
 
 // ── Inputs ──────────────────────────────────────────────────────────────────
@@ -213,6 +232,10 @@ export interface RefineInput {
   eval: EvalChoice;
   stop: StopPolicy;
   model?: string;
+  /** Append a token + cost + time footer to the result (the STDIO-436 meter).
+   * Covers the worker STEP calls (the attempt-maker, which `model` selects);
+   * omit to use the `AIGENCY_METER` env default (else none). */
+  meter?: MeterMode;
 }
 
 export interface SearchInput extends RefineInput {
@@ -224,15 +247,60 @@ export interface SearchInput extends RefineInput {
 
 // ── The runs (pure-ish orchestration over the family) ───────────────────────
 
+/** A loop run plus its already-rendered meter footer (`''` when metering is off
+ * or the worker reported no usage). Kept beside the result rather than baked into
+ * the formatted text so the result stays structured and the footer composes. */
+export interface MeteredRun<R> {
+  result: R;
+  meter: string;
+}
+
+/** Accumulates per-step usage + timing across a loop run, then renders the meter
+ * footer. One instance per run; its `record` is handed to every `makeRefineStep`
+ * (a search shares one accumulator across all its seeds, so totals are global). */
+class LoopMeterAccumulator {
+  private readonly usages: PerModelUsage[] = [];
+  private readonly roundMs: number[] = [];
+  private startedAt = 0;
+
+  start(): void {
+    this.startedAt = Date.now();
+  }
+
+  readonly record = (usage: PerModelUsage | null | undefined, elapsedMs: number): void => {
+    if (usage) this.usages.push(usage);
+    this.roundMs.push(elapsedMs);
+  };
+
+  /** Render the footer for the chosen meter mode. Warms the registry so the
+   * worker model can be priced from the catalog (idempotent). */
+  async footer(meter?: MeterMode): Promise<string> {
+    const mode = resolveMeterMode(meter);
+    if (mode === 'none') return '';
+    if (this.usages.length === 0) return '\n\n— metering: the worker reported no token usage —';
+    await warmRegistry();
+    const totalMs = this.startedAt ? Date.now() - this.startedAt : undefined;
+    const stageLabels = this.usages.map((_, i) => `call ${i + 1}`);
+    return meterFooter(this.usages, mode, {
+      stageLabels,
+      timing: { roundMs: this.roundMs, totalMs },
+    });
+  }
+}
+
 /** Run a refine loop for the tool: wire the worker step + chosen eval into the
- * pure `runRefineLoop`. `stepCall` is injectable for tests. */
+ * pure `runRefineLoop`, accumulating per-step usage for the meter. `stepCall` is
+ * injectable for tests. */
 export async function runRefine(
   input: RefineInput,
   stepCall: StepCall = defaultStepCall()
-): Promise<RefineResult<string>> {
+): Promise<MeteredRun<RefineResult<string>>> {
   const evaluate = evaluatorFor(input.eval);
-  const step = makeRefineStep(input.task, input.model, stepCall);
-  return runRefineLoop(step, evaluate, input.stop);
+  const meter = new LoopMeterAccumulator();
+  const step = makeRefineStep(input.task, input.model, stepCall, undefined, meter.record);
+  meter.start();
+  const result = await runRefineLoop(step, evaluate, input.stop);
+  return { result, meter: await meter.footer(input.meter) };
 }
 
 /** Default seed hints when the caller asks for N generated starts but gives no
@@ -255,15 +323,22 @@ export function resolveSeeds(input: SearchInput): string[] {
   return Array.from({ length: n }, (_, i) => GENERATED_SEED_HINTS[i % GENERATED_SEED_HINTS.length]);
 }
 
-/** Run a multi-seed search for the tool. `stepCall` is injectable for tests. */
+/** Run a multi-seed search for the tool, accumulating usage across all seeds for
+ * one global meter. `stepCall` is injectable for tests. */
 export async function runLoopSearch(
   input: SearchInput,
   stepCall: StepCall = defaultStepCall()
-): Promise<SearchResult<string, string>> {
+): Promise<MeteredRun<SearchResult<string, string>>> {
   const evaluate = evaluatorFor(input.eval);
   const seeds = resolveSeeds(input);
-  const makeStep = (seed: string) => makeRefineStep(input.task, input.model, stepCall, seed);
-  return runSearch(seeds, makeStep, evaluate, input.stop, { concurrency: input.concurrency });
+  const meter = new LoopMeterAccumulator();
+  const makeStep = (seed: string) =>
+    makeRefineStep(input.task, input.model, stepCall, seed, meter.record);
+  meter.start();
+  const result = await runSearch(seeds, makeStep, evaluate, input.stop, {
+    concurrency: input.concurrency,
+  });
+  return { result, meter: await meter.footer(input.meter) };
 }
 
 // ── Async / background jobs ──────────────────────────────────────────────────
@@ -381,21 +456,28 @@ function startJob(kind: LoopJobKind, work: () => Promise<string>): LoopJob {
 }
 
 /** Start a refine run in the background; poll with {@link loopResult}. `run` is
- * injectable for tests. */
+ * injectable for tests. The meter footer (when any) is appended to the result. */
 export function startRefine(
   input: RefineInput,
-  run: (i: RefineInput) => Promise<RefineResult<string>> = (i) => runRefine(i)
+  run: (i: RefineInput) => Promise<MeteredRun<RefineResult<string>>> = (i) => runRefine(i)
 ): LoopJob {
-  return startJob('refine', async () => formatRefineResult(await run(input)));
+  return startJob('refine', async () => {
+    const { result, meter } = await run(input);
+    return formatRefineResult(result) + meter;
+  });
 }
 
 /** Start a search run in the background; poll with {@link loopResult}. `run` is
- * injectable for tests. */
+ * injectable for tests. The meter footer (when any) is appended to the result. */
 export function startLoopSearch(
   input: SearchInput,
-  run: (i: SearchInput) => Promise<SearchResult<string, string>> = (i) => runLoopSearch(i)
+  run: (i: SearchInput) => Promise<MeteredRun<SearchResult<string, string>>> = (i) =>
+    runLoopSearch(i)
 ): LoopJob {
-  return startJob('search', async () => formatSearchResult(await run(input)));
+  return startJob('search', async () => {
+    const { result, meter } = await run(input);
+    return formatSearchResult(result) + meter;
+  });
 }
 
 /** Poll a background loop job by handle. */
@@ -442,14 +524,21 @@ export function registerLoopTools(server: McpServer): void {
         eval: z.object(EVAL_SHAPE).describe('How to score each attempt.'),
         stop: z.object(STOP_POLICY_SHAPE).describe('When to stop iterating.'),
         model: z.string().optional().describe('Worker model for the step (the attempt-maker).'),
+        meter: z
+          .enum(['none', 'totals-only', 'verbose'])
+          .optional()
+          .describe(
+            'Append a token + cost + time footer for the worker step calls. Omit to use the AIGENCY_METER env default (else none).'
+          ),
       },
     },
-    async ({ task, eval: evalChoice, stop, model }) => {
+    async ({ task, eval: evalChoice, stop, model, meter }) => {
       const job = startRefine({
         task,
         eval: evalChoice as EvalChoice,
         stop: stop as StopPolicy,
         model,
+        meter,
       });
       return {
         content: [
@@ -503,9 +592,15 @@ export function registerLoopTools(server: McpServer): void {
           .positive()
           .optional()
           .describe('Max seeds refining at once (default: all). Bound to cap worker pressure.'),
+        meter: z
+          .enum(['none', 'totals-only', 'verbose'])
+          .optional()
+          .describe(
+            'Append a token + cost + time footer for the worker step calls (summed across all seeds). Omit to use the AIGENCY_METER env default (else none).'
+          ),
       },
     },
-    async ({ task, eval: evalChoice, stop, model, seeds, seedCount, concurrency }) => {
+    async ({ task, eval: evalChoice, stop, model, seeds, seedCount, concurrency, meter }) => {
       const job = startLoopSearch({
         task,
         eval: evalChoice as EvalChoice,
@@ -514,6 +609,7 @@ export function registerLoopTools(server: McpServer): void {
         seeds,
         seedCount,
         concurrency,
+        meter,
       });
       return {
         content: [

@@ -4,7 +4,7 @@ import { provisionFrame } from './provision.js';
 import { tierModel } from '../tiers.js';
 import { meterFooter, resolveMeterMode, roundUsage, type MeterMode } from '../metering.js';
 import { warmRegistry } from '../registry.js';
-import type { ModelClass, ModelConnection } from '@verevoir/llm';
+import type { ModelClass, ModelConnection, PerModelUsage } from '@verevoir/llm';
 
 // DELEGATE (STDIO-345) — hand a self-contained sub-task to a configured WORKER
 // model and return its result. The worker is any OpenAI-compatible chat
@@ -48,21 +48,60 @@ export function workerConfig(): WorkerConfig {
 // unconfigured state.
 const NOT_CONFIGURED = "No worker model is configured for this project's MCP.";
 
-/** Run a prompt on the configured worker model via its OpenAI-compatible
- * chat-completions endpoint. Returns the assistant text, or a clear,
- * actionable message (never throws) so the coordinator can relay or repair. */
-export async function delegate(
+/** The OpenAI-compatible `usage` block, with the cache fields different
+ * providers report. `prompt_tokens_details.cached_tokens` (OpenAI) and
+ * `prompt_cache_hit_tokens` (DeepSeek) are a SUBSET of `prompt_tokens`. */
+interface WorkerUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_cache_hit_tokens?: number;
+}
+
+/** A structured worker call result: the text plus what it cost. `usage` is null
+ * when the worker reported none; `ok` is false for a not-configured / error
+ * message (so a caller — e.g. the loop meter — can skip pricing it). */
+export interface WorkerCall {
+  text: string;
+  ok: boolean;
+  model: string | null;
+  usage: PerModelUsage | null;
+  elapsedMs: number;
+}
+
+/** Map an OpenAI-compatible `usage` block to a per-model rollup. The cached
+ * tokens are a subset of `prompt_tokens`, so they're SUBTRACTED from `in` and
+ * reported as `cacheRead` — pricing the cached portion at the cache rate keeps
+ * the prompt-cache saving visible instead of billing it at the full input rate.
+ * Returns null when the worker reported no usable usage. */
+function usageFromResponse(model: string, usage: WorkerUsage | undefined): PerModelUsage | null {
+  if (!usage || (usage.prompt_tokens == null && usage.completion_tokens == null)) return null;
+  const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0;
+  const promptTokens = usage.prompt_tokens ?? 0;
+  const nonCachedInput = Math.max(0, promptTokens - cached);
+  return roundUsage(model, nonCachedInput, usage.completion_tokens ?? 0, cached, 0);
+}
+
+/**
+ * Run a prompt on the configured worker model and return the STRUCTURED result —
+ * text, the concrete model, token usage (when reported), and wall-clock. This is
+ * the shared core: {@link delegate} wraps it to append a meter footer, and the
+ * loop tools use it to accumulate per-iteration usage. Never throws — every
+ * failure path returns `ok: false` with an actionable message as `text`.
+ */
+export async function delegateDetailed(
   input: {
     prompt: string;
     system?: string;
     model?: string;
     governed?: boolean;
-    meter?: MeterMode;
   },
   provision: (prose: string) => Promise<string> = (prose) =>
     provisionFrame({ prose, autoTag: true }),
   tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel
-): Promise<string> {
+): Promise<WorkerCall> {
+  const startedAt = Date.now();
+  const elapsed = () => Date.now() - startedAt;
   const cfg = workerConfig();
   let baseUrl = cfg.baseUrl;
   let apiKey = cfg.apiKey;
@@ -77,7 +116,9 @@ export async function delegate(
       requested = conn.modelId;
     }
   }
-  if (!requested) return NOT_CONFIGURED;
+  if (!requested) {
+    return { text: NOT_CONFIGURED, ok: false, model: null, usage: null, elapsedMs: elapsed() };
+  }
   // Address a model loosely ("deepseek") or exactly ("DeepSeek-V3.2"); resolve
   // against what the worker actually serves (cached at registration).
   const model = resolveWorkerModel(requested, cachedWorkerModels());
@@ -113,43 +154,87 @@ export async function delegate(
       body: JSON.stringify({ model, messages }),
     });
   } catch (err) {
-    return (
-      `Could not reach the worker at ${url} (${String(err).slice(0, 120)}). ` +
-      "Is the local model server running (e.g. 'ollama serve'), or is AIGENCY_WORKER_URL correct?"
-    );
+    return {
+      text:
+        `Could not reach the worker at ${url} (${String(err).slice(0, 120)}). ` +
+        "Is the local model server running (e.g. 'ollama serve'), or is AIGENCY_WORKER_URL correct?",
+      ok: false,
+      model,
+      usage: null,
+      elapsedMs: elapsed(),
+    };
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    return `Worker returned HTTP ${res.status} from ${url} (model=${model}): ${body.slice(0, 200)}`;
+    return {
+      text: `Worker returned HTTP ${res.status} from ${url} (model=${model}): ${body.slice(0, 200)}`,
+      ok: false,
+      model,
+      usage: null,
+      elapsedMs: elapsed(),
+    };
   }
   const json = (await res.json().catch(() => null)) as {
     choices?: { message?: { content?: string } }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: WorkerUsage;
   } | null;
   const content = json?.choices?.[0]?.message?.content;
-  if (!content) return `Worker at ${url} returned no message content (model=${model}).`;
-  return content + (await delegateMeterFooter(model, json?.usage, resolveMeterMode(input.meter)));
+  if (!content) {
+    return {
+      text: `Worker at ${url} returned no message content (model=${model}).`,
+      ok: false,
+      model,
+      usage: null,
+      elapsedMs: elapsed(),
+    };
+  }
+  return {
+    text: content,
+    ok: true,
+    model,
+    usage: usageFromResponse(model, json?.usage),
+    elapsedMs: elapsed(),
+  };
 }
 
-/** The metering footer for a delegate call — a single worker round (STDIO-388).
- * Empty for `'none'`. A worker that reports no `usage` gets a legible note
- * rather than a misleading $0 table: "we metered nothing" must read differently
- * from "the worker didn't tell us". Warms the provider registry so the model can
- * be priced from the catalog (idempotent — only the first metered call pays). */
+/** Run a prompt on the configured worker model via its OpenAI-compatible
+ * chat-completions endpoint. Returns the assistant text (with an optional meter
+ * footer), or a clear, actionable message (never throws) so the coordinator can
+ * relay or repair. */
+export async function delegate(
+  input: {
+    prompt: string;
+    system?: string;
+    model?: string;
+    governed?: boolean;
+    meter?: MeterMode;
+  },
+  provision: (prose: string) => Promise<string> = (prose) =>
+    provisionFrame({ prose, autoTag: true }),
+  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel
+): Promise<string> {
+  const r = await delegateDetailed(input, provision, tier);
+  if (!r.ok) return r.text;
+  return r.text + (await delegateMeterFooter(r.usage, r.elapsedMs, resolveMeterMode(input.meter)));
+}
+
+/** The metering footer for a delegate call — a single worker round (STDIO-388),
+ * now carrying cache tokens + wall-clock (STDIO-436). Empty for `'none'`. A
+ * worker that reports no `usage` gets a legible note rather than a misleading $0
+ * table: "we metered nothing" must read differently from "the worker didn't tell
+ * us". Warms the provider registry so the model can be priced from the catalog
+ * (idempotent — only the first metered call pays). */
 async function delegateMeterFooter(
-  model: string,
-  usage: { prompt_tokens?: number; completion_tokens?: number } | undefined,
+  usage: PerModelUsage | null,
+  elapsedMs: number,
   mode: MeterMode
 ): Promise<string> {
   if (mode === 'none') return '';
-  if (!usage || (usage.prompt_tokens == null && usage.completion_tokens == null)) {
+  if (!usage) {
     return '\n\n— metering: the worker reported no token usage —';
   }
   await warmRegistry();
-  return meterFooter(
-    [roundUsage(model, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0)],
-    mode
-  );
+  return meterFooter([usage], mode, { timing: { totalMs: elapsedMs } });
 }
 
 /** A host-aware one-liner for the `delegate` description: whether a worker is
