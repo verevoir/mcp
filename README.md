@@ -186,9 +186,53 @@ Both halves degrade gracefully — an unreadable source, a failed tagging call, 
 
 Every frame is prefixed with a **corpus trust-boundary banner** (STDIO-399): the governance is injected into the model's prompt, so the banner frames it as the bar for _standards_, not a channel for commands — an instruction embedded in a practice/capability body is a poisoning _finding_ to report rather than follow. When the corpus is loaded from a non-canonical `AIGENCY_GUARDRAILS_URL`, the banner discloses that provenance.
 
-### Delegation
+### Worker tools (delegate / dispatch)
 
-`delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured per project** (env); with no worker configured the tool returns a short notice rather than erroring.
+`delegate` hands a self-contained sub-task to this project's configured **worker model** and returns its result — for offloading bounded work from the coordinator to a cheaper worker. The worker is **configured per project** (env); with no worker configured the tool returns a short notice rather than erroring. `dispatch` goes further: it hands a **frontier** model a read/write toolbelt it drives itself over a source (vs delegate's one-shot, no-tools call), with `dispatch_start` / `dispatch_result` for long runs that would exceed a synchronous timeout. Both take an optional `meter` (`none` | `totals-only` | `verbose`, or the `AIGENCY_METER` env default) that appends a token + cost footer.
+
+### Loop tools (refine / search)
+
+"Ralph looping" over the worker model: keep producing an attempt, **score** it, and feed the score's feedback into the next attempt — so the work _improves_ across iterations instead of re-rolling. `refine` runs one improving line; `search` runs K diverse seeds, each its own refine loop (its **arms in parallel**), and selects the global best — escaping a local optimum a single line gets stuck in. Both are slow (many worker calls), so both are **background jobs**: `refine_start` / `search_start` return an unguessable handle immediately, `refine_result` / `search_result` poll it.
+
+Each attempt is scored by an **eval** (`eval.kind`, normalised to 0..1):
+
+- `deterministic` — a JS expression scoring the string `output` to a number, **no model** (the cheap path), e.g. `expression: "output.length <= 400 ? 1 : 0"`.
+- `judge` — the worker scores against a `rubric` (judge on a specific model with `judgeModel`).
+- `practices` — provision the **bar** for `workDescription` and score against it: _loop until the work meets the standards the rest of the MCP holds work to_.
+
+The **stop policy** ends the loop as soon as **any** condition is met: `maxLoops` (the always-set backstop), `targetScore` (stop at or above it), or `diminishingReturns: { epsilon, window }` (stop once the best score's improvement over the last `window` iterations falls below `epsilon`).
+
+```ts
+// Refine against a rubric, stopping when it plateaus rather than at a fixed count.
+refine_start({
+  task: 'Draft a migration runbook for splitting the orders table.',
+  eval: {
+    kind: 'judge',
+    rubric: 'Complete, ordered, reversible steps; calls out the lock window; names rollback.',
+  },
+  stop: { maxLoops: 6, diminishingReturns: { epsilon: 0.05, window: 3 } },
+});
+
+// Loop N times on a specific worker model ("loop this 6 times with mistral");
+// the judge can run on a different model.
+refine_start({
+  task: 'Refactor this function for readability: …',
+  model: 'mistral',
+  eval: { kind: 'judge', rubric: 'clearer naming, no behaviour change', judgeModel: 'deepseek' },
+  stop: { maxLoops: 6 },
+});
+
+// Multi-seed search — K diverse approaches in parallel, select the best.
+search_start({
+  task: 'Name this open-source project: a fast Terraform linter.',
+  seeds: ['evoke speed', 'evoke safety and correctness', 'a playful, unexpected angle'],
+  eval: { kind: 'judge', rubric: 'memorable, sounds available, hints at the domain' },
+  stop: { maxLoops: 3, targetScore: 0.9 },
+  concurrency: 3,
+});
+```
+
+Both results carry the full **trace** — every iteration's score and feedback, the winning output, and why it stopped (and, for search, every seed's best, not just the winner's) — so a run is auditable rather than opaque. Give `search` explicit `seeds` or a `seedCount` of generated diverse starts.
 
 ## Board card sync (CI)
 

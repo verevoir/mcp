@@ -133,6 +133,80 @@ dispatch_result({ handle })                                              → tex
 
 `dispatch` resolves `model` by family or id (e.g. "deepseek") via the registry and runs it as an agent with a curated toolbelt (`read_file`, `grep`, `find_symbol`, `provision`, `write_file`, `edit_file`) bound to a tool loop. Runs can be slow; it emits per-round progress. For a long run that would exceed a synchronous tool-call timeout, use `dispatch_start` (returns a handle immediately) + `dispatch_result` (poll by handle). A non-Anthropic worker means the source was sent to a third-party provider — `dispatch` discloses that egress on every such run. `meter` (`none` | `totals-only` | `verbose`, or the `AIGENCY_METER` env default) appends a token + cost footer.
 
+### Loop tools (refine / search)
+
+"Ralph looping" over the worker model: keep producing an attempt, **score** it, and feed the score's feedback into the next attempt so the work *improves* across iterations instead of re-rolling. `refine` runs one improving line of attempts; `search` runs K diverse seeds — each its own refine loop — and selects the global best, so it escapes a local optimum a single line gets stuck in. Both are slow (many worker calls), so both are **background jobs**: `*_start` returns an unguessable handle immediately, `*_result` polls it.
+
+```ts
+refine_start({ task, eval, stop, model? })                               → { handle, status, poll }
+refine_result({ handle })                                               → best attempt + score + stopReason + trace
+search_start({ task, eval, stop, model?, seeds?, seedCount?, concurrency? }) → { handle, status, poll }
+search_result({ handle })                                               → winning seed + its best + every seed's best
+```
+
+**The eval — how each attempt is scored** (`eval.kind`, score normalised to 0..1):
+- `deterministic` — a JS expression body scoring the string `output` to a number, **no model** (the cheap path): `eval: { kind: 'deterministic', expression: "output.includes('DONE') ? 1 : 0" }`. The expression sees only `output`; a malformed one scores 0 with legible feedback rather than throwing.
+- `judge` — the worker scores the output against a `rubric`: `eval: { kind: 'judge', rubric: 'Complete, ordered, reversible steps; names the rollback.' }`. Judge on a specific model with `judgeModel`.
+- `practices` — provision the **bar** for `workDescription` and score against it — *loop until the work meets the standards the rest of the MCP holds work to*: `eval: { kind: 'practices', workDescription: 'a small TypeScript utility with tests' }`.
+
+**The stop policy** (`stop`) — the loop stops as soon as **any** condition is met:
+- `maxLoops` — a hard cap on iterations (always set; the backstop).
+- `targetScore` — stop once an attempt scores at or above this.
+- `diminishingReturns: { epsilon, window }` — stop once the best score's improvement over the last `window` iterations falls below `epsilon` (it has plateaued). Needs `window` iterations of history before it can fire.
+
+**Worked examples.**
+
+Refine with a cheap deterministic metric, stop at the target or after 4 tries:
+```ts
+refine_start({
+  task: 'Write a one-paragraph blurb for a CLI that lints Terraform. Keep it under 400 chars.',
+  eval: { kind: 'deterministic', expression: 'output.length <= 400 ? 1 : 0' },
+  stop: { maxLoops: 4, targetScore: 1 },
+})
+```
+
+Refine against a rubric, stopping when it plateaus rather than at a fixed count:
+```ts
+refine_start({
+  task: 'Draft a migration runbook for splitting the orders table.',
+  eval: { kind: 'judge', rubric: 'Complete, ordered, reversible steps; calls out the lock window; names rollback.' },
+  stop: { maxLoops: 6, diminishingReturns: { epsilon: 0.05, window: 3 } },
+})
+```
+
+Refine until the work meets the provisioned practices bar:
+```ts
+refine_start({
+  task: 'Implement a debounce() helper in TypeScript with tests.',
+  eval: { kind: 'practices', workDescription: 'a small TypeScript utility with tests' },
+  stop: { maxLoops: 5, targetScore: 0.9 },
+})
+```
+
+**Loop N times on a specific worker model** ("loop this 6 times with mistral") — `model` runs the *step* (the attempt-maker) on a chosen served model; the judge can run on a different one via `judgeModel`:
+```ts
+refine_start({
+  task: 'Refactor this function for readability: …',
+  model: 'mistral',
+  eval: { kind: 'judge', rubric: 'clearer naming, no behaviour change', judgeModel: 'deepseek' },
+  stop: { maxLoops: 6 },
+})
+```
+
+**Multi-seed search** — start from K diverse approaches and select the best; the **arms run in parallel** (bound the fan-out with `concurrency` to cap worker pressure). Give explicit `seeds` (approach hints) or a `seedCount` of generated diverse starts:
+```ts
+search_start({
+  task: 'Name this open-source project: a fast Terraform linter.',
+  seeds: ['evoke speed', 'evoke safety and correctness', 'a playful, unexpected angle'],
+  eval: { kind: 'judge', rubric: 'memorable, sounds available, hints at the domain' },
+  stop: { maxLoops: 3, targetScore: 0.9 },
+  concurrency: 3,
+})
+// search_result returns the winning seed AND every seed's best score + stop reason — legible, not a black box.
+```
+
+Both results carry the full **trace** (every iteration's score and feedback, the winning output, why it stopped), so a run is auditable rather than opaque. Handles are unguessable (`loop-<uuid>`) and TTL-bounded, the same job model as `dispatch`.
+
 ## Prompts
 
 The server also registers the guardrails **reasoning skills** (`corpus/skills/*.md`) as MCP prompts. Invoking a prompt returns the skill's instructions plus your arguments as a message for your own model to execute, so a skill runs on the host's tokens. The corpus source defaults to the canonical guardrails repo (override with `AIGENCY_GUARDRAILS_URL`); loading is best-effort, so a missing token simply means no skill prompts. Requires an MCP client that supports prompts.
