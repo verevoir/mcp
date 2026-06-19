@@ -137,6 +137,25 @@ dispatch_result({ handle })                                              → tex
 
 The server also registers the guardrails **reasoning skills** (`corpus/skills/*.md`) as MCP prompts. Invoking a prompt returns the skill's instructions plus your arguments as a message for your own model to execute, so a skill runs on the host's tokens. The corpus source defaults to the canonical guardrails repo (override with `AIGENCY_GUARDRAILS_URL`); loading is best-effort, so a missing token simply means no skill prompts. Requires an MCP client that supports prompts.
 
+## Sanity check
+
+After configuring + restarting, ask the model to call `list_columns` against your board — an array of columns confirms the wiring. `TRELLO_API_KEY not set` or `Trello returned 401: invalid key` means the auth env or the Power-Up referer is the cause.
+
+## Board card sync (CI)
+
+Two GitHub Actions workflows ship with the package to keep a work-tracker board in step with PR lifecycle. Both are deterministic, best-effort, and **never block a merge** — an unknown card or missing config is logged and the job exits 0.
+
+- **`card-sync`** — moves a PR's card on event: PR **opened → "In preview"**, **merged → "Done"**, keyed off the `<Namespace>-<id>` work-item id in the branch.
+- **`card-reconcile`** — a periodic reconciler (scheduled + `workflow_dispatch`) that self-heals missed events (dropped webhook, PR closed-without-merge stranding a card). It recomputes each card's **desired** column from live PR state across the org and fixes drift: any **open** PR → "In preview"; else any **merged** PR → "Done"; else only **closed-unmerged** → "Not started". A card with no PRs is left where a human put it.
+  - **Ownership guard.** A card in **"In progress" assigned to another user** is left alone (logged), not yanked on PR-derived state. Set `RECONCILE_USER_ID` (the board user the automation acts as) so cards assigned to *that* user are still reconciled; with it unset, any assigned in-progress card is treated as another's and skipped.
+
+Activate by setting two values **at the GitHub org level** (once — the credential should have one holder):
+
+- `NOTION_API_KEY` — org **secret**: the board's Notion integration token.
+- `BOARD_URL` — org **variable**: the board's Notion database URL (e.g. `https://www.notion.so/<database-id>`).
+
+Until both are set the steps best-effort-skip (no token → exit 0), so they are inert and harmless. The reconciler also uses the CI `GITHUB_TOKEN` for its PR search.
+
 ## Caching semantics
 
 `read_file` returns from cache on the second call for the same `(sourceUrl, ref, path)`. `grep`, `find_symbol`, and `code_graph` scan-and-cache on demand. `write_file` / `edit_file` invalidate the written file from the cache so the next read/search re-fetches.
