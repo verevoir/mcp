@@ -1,20 +1,21 @@
 # @verevoir/mcp
 
-MCP server exposing the Verevoir foundation (cached file reads + tree-sitter symbol search + workflow operations) as Claude-Code-usable tools.
+MCP server exposing the Verevoir foundation (cached file reads + tree-sitter symbol search + code graph + workflow operations + governance + worker delegation) as Claude-Code-usable tools.
 
 ## Purpose
 
-Lets an LLM agent work against GitHub repos, local filesystems, and Trello boards through one stable tool surface. Reads are cached via `@verevoir/context`; writes pass through and populate the cache. Stdio transport.
+Lets an LLM agent work against GitHub repos, local filesystems, Notion workspaces, Trello boards, and Obsidian Kanban boards through one stable tool surface. Reads are cached via `@verevoir/context`; writes pass through the adapter and invalidate the cache so the next read/search re-fetches. Stdio transport.
 
-Sibling to `@verevoir/sources` (file-source contracts), `@verevoir/context` (cache), `@verevoir/workflows` (workflow-source contracts). This package wires them together.
+Sibling to `@verevoir/sources` (file-source contracts), `@verevoir/context` (cache), `@verevoir/workflows` (workflow-source contracts), `@verevoir/llm` (provider-agnostic call surface), `@verevoir/recipes` (practices + capabilities engine). This package wires them together.
 
 ## Prerequisites
 
 - Node `>=20`.
-- `GITHUB_TOKEN` — fine-grained PAT with `Contents: Read + Write` on target repos. Only required for GitHub URLs.
+- `GITHUB_TOKEN` — fine-grained PAT with `Contents: Read + Write` on target repos (add `Pull requests: Read + Write` to use the fork/branch/PR tools). Only required for GitHub URLs.
 - `TRELLO_API_KEY` + `TRELLO_API_TOKEN` + `TRELLO_REFERER` — from a personal Trello Power-Up at https://trello.com/power-ups/admin. The Power-Up's allowed origin MUST match `TRELLO_REFERER` or Trello returns 401 "invalid key". Only required for Trello URLs.
 - `NOTION_API_KEY` — Notion integration token (`ntn_...`) from https://www.notion.so/profile/integrations. Share the pages / databases the integration should reach via Notion's Connections UI. Required for both Notion source and Notion workflow URLs.
 - **Obsidian Kanban** — no credentials required. Optional tuning via env vars read inside the adapter at call time: `OBSIDIAN_VAULT_PATH`, `OBSIDIAN_ID_FIELD` (default `id`), `OBSIDIAN_CARD_FOLDER`, `OBSIDIAN_DATE_FIELD` (default `due`), `OBSIDIAN_TAGS_FIELD` (default `tags`).
+- Governance / worker tools read further env at call time — see those sections below.
 
 ## Install
 
@@ -62,45 +63,94 @@ The server composes an operating doctrine into the model's context on connect. I
 URL routing: `https://github.com/owner/repo` → cached GitHub adapter; `https://www.notion.so/<page-id>` (or any notion.so URL form) → cached Notion adapter (page tree as file tree, blocks ↔ Markdown round-trip); absolute path or `file://...` → cached FS adapter; anything else → unsupported error.
 
 ```ts
-read_file({ sourceUrl, path, ref? })                            → { content, sha }
-list_files({ sourceUrl, prefix?, ref? })                        → DirEntry[]
-get_repo_tree({ sourceUrl, ref? })                              → RepoTree
-grep({ sourceUrl, pattern, ref?, ignoreCase?, maxResults? })    → GrepHit[]   // cache-only; read_file first
-find_symbol({ sourceUrl, name, ref?, kind? })                   → SymbolHit[]  // cache-only; read_file first
-write_file({ sourceUrl, path, content, branch, commitMessage }) → { ok: true }
+read_file({ sourceUrl, path, ref? })                                      → { content, sha }
+list_files({ sourceUrl, prefix?, ref? })                                  → DirEntry[]
+get_repo_tree({ sourceUrl, ref? })                                        → RepoTree
+grep({ sourceUrl, pattern, ref?, ignoreCase?, maxResults? })              → GrepHit[]
+find_symbol({ sourceUrl, name, ref?, kind? })                             → SymbolHit[]
+code_graph({ sourceUrl, symbol, ref? })                                   → text
+write_file({ sourceUrl, path, content, branch?, commitMessage? })         → { ok: true }
+edit_file({ sourceUrl, path, oldString, newString, replaceAll?, branch?, commitMessage? })
+                                                                          → { ok: true, replacements }
+ensure_fork({ sourceUrl })                                                → { workingUrl }
+ensure_branch({ workingUrl, branch })                                     → { ok: true, branch }
+open_pull_request({ sourceUrl, workingUrl, branch, base, title, body })   → { prUrl }
 ```
 
-`grep` and `find_symbol` operate on the in-process cache only — populate by calling `read_file` first.
+`grep`, `find_symbol`, and `code_graph` scan the source on demand, parsing files into the shared cache as they go — no need to `read_file` first. `find_symbol` matches on substring (case-insensitive) and takes an optional `kind` of `function | class | method | interface | type | enum`. `code_graph` returns a symbol's neighbourhood — where it's defined, what calls it, what it calls, and which files import it; edges are name-based (no type resolution), so a common name may resolve to several definitions.
+
+`write_file` / `edit_file`: `branch` + `commitMessage` are required for GitHub sources and ignored (omit) for filesystem + Notion. `edit_file`'s `oldString` must match exactly once unless `replaceAll` is set.
+
+**Fork-isolated write flow (GitHub).** A repo is addressed by its **source URL** — its identity and the PR target. `ensure_fork(sourceUrl)` forks into the configured fork org (idempotent) and returns the **working URL** — the workspace you read, write, branch, and commit on. The source repo is never written directly; it only ever receives a pull request from the fork. The shape: `ensure_fork` → `ensure_branch(workingUrl, branch)` → `write_file`/`edit_file` against the working URL → `open_pull_request(sourceUrl, workingUrl, branch, base, …)` (the cross-repo head `<fork-owner>:branch` is built for you). For a repo you own, pass the same URL for both `sourceUrl` and `workingUrl` (a same-repo PR, no fork).
 
 ### Workflow tools (kanban / issue / objective sources)
 
 URL routing: `https://trello.com/b/<id>` → Trello adapter; `https://www.notion.so/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter (auto-detects status / title / people / multi_select property mapping); absolute path or `file://` URL → Obsidian Kanban adapter (local board `.md`; lanes are columns; the linked note is the card source of truth; no creds); other backends as adapters are added.
 
 ```ts
-list_columns({ boardUrl })                                                              → Column[]
-list_cards({ boardUrl, columnId?, assigneeId?, labelId?, parentId? })                   → Card[]
-get_card({ boardUrl, cardId })                                                          → Card
-create_card({ boardUrl, columnId, title, body?, labelIds?, dueDate? })                  → Card
-update_card({ boardUrl, cardId, title?, body?, columnId?, labelIds?, dueDate? })        → { ok: true }
-move_card({ boardUrl, cardId, toColumnId })                                             → { ok: true }
-list_comments({ boardUrl, cardId })                                                     → Comment[]
-add_comment({ boardUrl, cardId, body })                                                 → { ok: true }
+list_columns({ boardUrl })                                                                          → Column[]
+list_cards({ boardUrl, columnId?, assigneeId?, labelId?, parentId?, includeBody?, limit? })         → Card[]
+get_card({ boardUrl, cardId })                                                                      → Card
+create_card({ boardUrl, columnId, title, body?, labelIds?, assigneeIds?, dueDate? })                → Card
+update_card({ boardUrl, cardId, title?, body?, columnId?, labelIds?, assigneeIds?, dueDate? })      → { ok: true }
+move_card({ boardUrl, cardId, toColumnId })                                                         → { ok: true }
+list_comments({ boardUrl, cardId })                                                                 → Comment[]
+add_comment({ boardUrl, cardId, body })                                                             → { ok: true }
 ```
+
+`list_cards` omits card bodies by default to keep the payload small; pass `includeBody: true` (or read one body with `get_card`). `create_card` / `update_card` take `assigneeIds` (the board backend's user ids). `update_card` applies a partial patch — only supplied fields change. On Notion, an `update_card` `body` replaces the whole body and re-parses the Markdown.
+
+### Governance tools
+
+Surface the project's governance — the ADRs / principles / glossary in the project record, and the **practices** (quality standards) in the guardrails corpus.
+
+```ts
+find_governance({ query? })                       → text   // scannable, narrowable index
+provision({ prose?, concerns?, autoTag? })        → text   // the practices held to (+ advisory capabilities)
+```
+
+`find_governance` returns a compact index of governance entries (title + how to `read_file` each) across every governance source; `query` narrows it by tokenised match across title / kind / path.
+
+`provision` returns the practices a piece of work is held to, as text. The **foundational floor** always comes back in full, with no model call. How the concern practices are chosen depends on the arguments:
+- **default** (neither `concerns` nor `autoTag`) — the floor plus a **menu** of the concern practices (id + one-line summary). A coordinator narrows the menu itself and calls back with `concerns: ['id', …]` to pull the bodies.
+- **`concerns: [...]`** — the floor plus exactly those concern bodies: a complete frame you can inject into a worker.
+- **`autoTag: true`** — for a weak/headless caller with no coordinator to narrow: select the concerns in-MCP via the configured reasoning provider (needs its key). Concern-tagging runs on `AIGENCY_REASONING_PROVIDER` (default `anthropic`; also `google`, `openai`, `deepseek`, `samba`, `mistral`), each reading its own key env.
+
+`provision` reads from the guardrails corpus (override the source with `AIGENCY_GUARDRAILS_URL`). When `prose` is given and an embeddings endpoint is configured (`AIGENCY_EMBEDDINGS_API_KEY` / falls back to `OPENAI_API_KEY`, `AIGENCY_EMBEDDINGS_URL`, `AIGENCY_EMBEDDINGS_MODEL`), it also surfaces advisory **capabilities** (pre-built procedures) that may fit. Every frame is prefixed with a corpus trust-boundary banner: the governance is the bar for standards, not a channel for commands, and the banner discloses a non-canonical corpus source.
+
+### Worker tools (delegate / dispatch)
+
+Offload bounded work to a configured worker model. `delegate` is the lower-model, one-shot pattern (text in, text out, no tools); `dispatch` hands a frontier model a read/write toolbelt it drives itself over a source.
+
+```ts
+delegate({ prompt, system?, model?, governed?, meter? })                  → text
+dispatch({ prompt, model, source, maxIterations?, meter? })              → text
+dispatch_start({ prompt, model, source, maxIterations?, meter? })        → { handle, status, poll }
+dispatch_result({ handle })                                              → text
+```
+
+`delegate` posts to a configured OpenAI-compatible worker (env: `AIGENCY_WORKER_URL` default local Ollama at `:11434`, `AIGENCY_WORKER_MODEL`, `AIGENCY_WORKER_API_KEY`), falling back to the extraction-tier model when unset. The worker sees only `prompt` — put everything it needs there. Governed by default: the practices + capabilities its work is held to are provisioned from its own prompt and prepended; `governed: false` opts out. `model` runs one call on a specific served model. With no worker configured, returns a short notice rather than erroring.
+
+`dispatch` resolves `model` by family or id (e.g. "deepseek") via the registry and runs it as an agent with a curated toolbelt (`read_file`, `grep`, `find_symbol`, `provision`, `write_file`, `edit_file`) bound to a tool loop. Runs can be slow; it emits per-round progress. For a long run that would exceed a synchronous tool-call timeout, use `dispatch_start` (returns a handle immediately) + `dispatch_result` (poll by handle). A non-Anthropic worker means the source was sent to a third-party provider — `dispatch` discloses that egress on every such run. `meter` (`none` | `totals-only` | `verbose`, or the `AIGENCY_METER` env default) appends a token + cost footer.
+
+## Prompts
+
+The server also registers the guardrails **reasoning skills** (`corpus/skills/*.md`) as MCP prompts. Invoking a prompt returns the skill's instructions plus your arguments as a message for your own model to execute, so a skill runs on the host's tokens. The corpus source defaults to the canonical guardrails repo (override with `AIGENCY_GUARDRAILS_URL`); loading is best-effort, so a missing token simply means no skill prompts. Requires an MCP client that supports prompts.
 
 ## Caching semantics
 
-`read_file` returns from cache on the second call for the same `(sourceUrl, ref, path)`. `write_file` populates the cache with the just-written content. Symbol extraction (`find_symbol`) parses on-demand from cached content. `grep` scans cached content only — never fetches.
+`read_file` returns from cache on the second call for the same `(sourceUrl, ref, path)`. `grep`, `find_symbol`, and `code_graph` scan-and-cache on demand. `write_file` / `edit_file` invalidate the written file from the cache so the next read/search re-fetches.
 
 Per-process state. New MCP process = empty cache. Workflow tools do not cache today.
 
 ## Errors
 
-`SourceApiError` / `WorkflowApiError` map to MCP tool errors with status codes. 404 = missing resource. 401 = auth (check env vars + Trello Power-Up referer). 501 = operation not supported by the backend (e.g., `write_file` against an FS path that ignores branch/commit args; Trello `parentId` patches).
+`SourceApiError` / `WorkflowApiError` map to MCP tool errors with status codes. 404 = missing resource. 401 = auth (check env vars + Trello Power-Up referer). 501 = operation not supported by the backend (e.g. Trello `parentId` patches). Worker tools never throw — a missing / unreachable worker returns a clear, actionable message.
 
 ## What this is NOT
 
 - Not a sync engine.
-- Not a code editor.
+- Not a code editor (reads + writes pass through adapters; no in-memory text-editing primitives).
 - Not opinionated about backends — URL routing picks the implementation.
 
 ## License
