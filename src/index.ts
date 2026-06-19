@@ -6,6 +6,7 @@ import { registerGovernanceTool } from './tools/governance.js';
 import { registerProvisionTool } from './tools/provision.js';
 import { registerDelegateTool } from './tools/delegate.js';
 import { registerDispatchTool } from './tools/dispatch.js';
+import { registerLoopTools } from './tools/loop.js';
 import { loadInstructions } from './instructions.js';
 import { loadManifest, composeInstructions } from './manifest.js';
 
@@ -43,6 +44,10 @@ export async function createServer(): Promise<McpServer> {
   // The frontier-worker connector: hand a whole task to a frontier model and let
   // it drive a read-only toolbelt over a source (vs delegate's one-shot).
   registerDispatchTool(server);
+  // The Ralph-looping family: iterate-with-eval (refine) and multi-seed search,
+  // run as background jobs over the worker model — refine until the work meets
+  // a deterministic/judge/practices bar, or search K diverse seeds and select.
+  registerLoopTools(server);
   // Best-effort: registers the guardrails reasoning skills as prompts. A load
   // failure (no token, source unreachable) leaves the server running with its
   // tools and no skill prompts rather than failing to start.
