@@ -154,16 +154,16 @@ All take a `boardUrl`:
 - `https://www.notion.so/<workspace>/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter. Rows become `Card`s; auto-detects which property is the status / column from the database schema.
 - Absolute filesystem path or `file://` URL → Obsidian Kanban adapter. Local board `.md`; `## headings` are columns; `- [ ] [[Note]]` wikilinks are cards; the linked note is the card source of truth; no credentials required.
 
-| Tool            | Args                                                                  | Returns        |
-| --------------- | --------------------------------------------------------------------- | -------------- |
-| `list_columns`  | `{ boardUrl }`                                                        | `Column[]`     |
-| `list_cards`    | `{ boardUrl, columnId?, assigneeId?, labelId?, parentId? }`           | `Card[]`       |
-| `get_card`      | `{ boardUrl, cardId }`                                                | `Card`         |
-| `create_card`   | `{ boardUrl, columnId, title, body?, labelIds?, dueDate? }`           | `Card`         |
-| `update_card`   | `{ boardUrl, cardId, title?, body?, columnId?, labelIds?, dueDate? }` | `{ ok: true }` |
-| `move_card`     | `{ boardUrl, cardId, toColumnId }`                                    | `{ ok: true }` |
-| `list_comments` | `{ boardUrl, cardId }`                                                | `Comment[]`    |
-| `add_comment`   | `{ boardUrl, cardId, body }`                                          | `{ ok: true }` |
+| Tool            | Args                                                                                | Returns        |
+| --------------- | ----------------------------------------------------------------------------------- | -------------- |
+| `list_columns`  | `{ boardUrl }`                                                                      | `Column[]`     |
+| `list_cards`    | `{ boardUrl, columnId?, assigneeId?, labelId?, parentId? }`                         | `Card[]`       |
+| `get_card`      | `{ boardUrl, cardId }`                                                              | `Card`         |
+| `create_card`   | `{ boardUrl, columnId, title, body?, labelIds?, assigneeIds?, dueDate? }`           | `Card`         |
+| `update_card`   | `{ boardUrl, cardId, title?, body?, columnId?, labelIds?, assigneeIds?, dueDate? }` | `{ ok: true }` |
+| `move_card`     | `{ boardUrl, cardId, toColumnId }`                                                  | `{ ok: true }` |
+| `list_comments` | `{ boardUrl, cardId }`                                                              | `Comment[]`    |
+| `add_comment`   | `{ boardUrl, cardId, body }`                                                        | `{ ok: true }` |
 
 ### Governance tools
 
