@@ -85,7 +85,7 @@ open_pull_request({ sourceUrl, workingUrl, branch, base, title, body })   → { 
 
 ### Workflow tools (kanban / issue / objective sources)
 
-URL routing: `https://trello.com/b/<id>` → Trello adapter; `https://www.notion.so/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter (auto-detects status / title / people / multi_select property mapping); absolute path or `file://` URL → Obsidian Kanban adapter (local board `.md`; lanes are columns; the linked note is the card source of truth; no creds); other backends as adapters are added.
+URL routing: `https://trello.com/b/<id>` → Trello adapter; `https://www.notion.so/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter (auto-detects status / title / people / multi_select property mapping); absolute path or `file://` URL ending in `.md` → Obsidian Kanban adapter (local board `.md`; lanes are columns; the linked note is the card source of truth; no creds); absolute path or `file://` URL to a **directory** (the project root or its `backlog/` dir) → Backlog.md adapter (config.yml statuses are columns, `backlog/tasks/*.md` are cards; for tracking work as committable files in a code repo; no creds); other backends as adapters are added.
 
 ```ts
 list_columns({ boardUrl })                                                                          → Column[]

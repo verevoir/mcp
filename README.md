@@ -152,7 +152,8 @@ All take a `boardUrl`:
 
 - `https://trello.com/b/<id>` → Trello adapter.
 - `https://www.notion.so/<workspace>/<db-id>?v=...` (or any notion.so URL form pointing at a database) → Notion adapter. Rows become `Card`s; auto-detects which property is the status / column from the database schema.
-- Absolute filesystem path or `file://` URL → Obsidian Kanban adapter. Local board `.md`; `## headings` are columns; `- [ ] [[Note]]` wikilinks are cards; the linked note is the card source of truth; no credentials required.
+- Absolute filesystem path or `file://` URL ending in `.md` → Obsidian Kanban adapter. Local board `.md`; `## headings` are columns; `- [ ] [[Note]]` wikilinks are cards; the linked note is the card source of truth; no credentials required.
+- Absolute filesystem path or `file://` URL to a **directory** (the project root or its `backlog/` dir) → Backlog.md adapter. `backlog/config.yml` statuses are columns; `backlog/tasks/*.md` are cards (frontmatter `id` / `title` / `status` / `labels` / `assignee` / `parent_task_id`, markdown body as the description); for tracking work as committable files inside a code repo; no credentials required.
 
 | Tool            | Args                                                                                | Returns        |
 | --------------- | ----------------------------------------------------------------------------------- | -------------- |
