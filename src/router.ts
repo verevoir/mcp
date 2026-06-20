@@ -5,6 +5,7 @@ import { envFromProcessEnv } from '@verevoir/sources';
 import { envFromTrelloProcessEnv } from '@verevoir/workflows/trello';
 import { envFromNotionProcessEnv } from '@verevoir/workflows/notion';
 import { envFromObsidianProcessEnv, parseObsidianBoardPath } from '@verevoir/workflows/obsidian';
+import { envFromBacklogProcessEnv, parseBacklogBoardPath } from '@verevoir/workflows/backlog';
 import { wrapWorkflowWithCache } from '@verevoir/context';
 
 // ---------------------------------------------------------------------------
@@ -105,13 +106,21 @@ export async function pickWorkflowAdapter(boardUrl: string): Promise<WorkflowAda
     const { notion } = await import('@verevoir/workflows/notion');
     return wrapWorkflowWithCache(notion);
   }
+  // Backlog before Obsidian: both take local paths, but a Backlog project is a
+  // directory (parseBacklogBoardPath rejects a `.md` path) while an Obsidian
+  // board is a `.md` file — so checking Backlog first leaves `.md` paths to
+  // Obsidian and routes directories to Backlog.
+  if (parseBacklogBoardPath(boardUrl) !== null) {
+    const { backlog } = await import('@verevoir/workflows/backlog');
+    return wrapWorkflowWithCache(backlog);
+  }
   if (parseObsidianBoardPath(boardUrl) !== null) {
     const { obsidian } = await import('@verevoir/workflows/obsidian');
     return wrapWorkflowWithCache(obsidian);
   }
   // Future: Jira, Linear adapters would slot in here.
   throw new Error(
-    `Unsupported board URL: ${boardUrl}. Expected https://trello.com/b/<id>, https://www.notion.so/<db-id>, or an absolute path / file:// URL to an Obsidian Kanban board .md.`
+    `Unsupported board URL: ${boardUrl}. Expected https://trello.com/b/<id>, https://www.notion.so/<db-id>, an absolute path / file:// URL to an Obsidian Kanban board .md, or a path to a Backlog.md project directory.`
   );
 }
 
@@ -139,10 +148,14 @@ export function resolveWorkflowEnv(boardUrl: string): WorkflowEnv {
     if (!env) throw new Error('NOTION_API_KEY not set — required for Notion databases.');
     return env;
   }
+  // Backlog before Obsidian — see pickWorkflowAdapter for the directory-vs-.md split.
+  if (parseBacklogBoardPath(boardUrl) !== null) {
+    return envFromBacklogProcessEnv();
+  }
   if (parseObsidianBoardPath(boardUrl) !== null) {
     return envFromObsidianProcessEnv();
   }
   throw new Error(
-    `Unsupported board URL: ${boardUrl}. Expected https://trello.com/b/<id>, https://www.notion.so/<db-id>, or an absolute path / file:// URL to an Obsidian Kanban board .md.`
+    `Unsupported board URL: ${boardUrl}. Expected https://trello.com/b/<id>, https://www.notion.so/<db-id>, an absolute path / file:// URL to an Obsidian Kanban board .md, or a path to a Backlog.md project directory.`
   );
 }

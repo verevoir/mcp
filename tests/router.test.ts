@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pickSourceAdapter, pickWorkflowAdapter, resolveWorkflowEnv } from '../src/router.js';
 
 describe('pickSourceAdapter', () => {
@@ -90,6 +93,22 @@ describe('pickWorkflowAdapter', () => {
     expect(typeof adapter.listColumns).toBe('function');
   });
 
+  it('routes a Backlog.md project directory to the backlog adapter, not Obsidian', async () => {
+    // Behavioural proof of the directory-vs-.md split: the backlog adapter reads
+    // columns from backlog/config.yml; Obsidian would try to parse the path as a
+    // board .md and never produce these columns.
+    const root = mkdtempSync(join(tmpdir(), 'mcp-router-backlog-'));
+    mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+    writeFileSync(join(root, 'backlog', 'config.yml'), 'statuses:\n  - Todo\n  - Shipped\n');
+    try {
+      const adapter = await pickWorkflowAdapter(root);
+      const columns = await adapter.listColumns({ token: '' }, root);
+      expect(columns.map((c) => c.name)).toEqual(['Todo', 'Shipped']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('throws for a Jira URL', async () => {
     await expect(
       pickWorkflowAdapter('https://myorg.atlassian.net/jira/software/projects/P')
@@ -109,6 +128,11 @@ describe('resolveWorkflowEnv', () => {
 
   it('returns { token: "" } for a file:// board URL (Obsidian Kanban board)', () => {
     const env = resolveWorkflowEnv('file:///abs/path/Board.md');
+    expect(env).toEqual({ token: '' });
+  });
+
+  it('returns { token: "" } for a Backlog.md project directory', () => {
+    const env = resolveWorkflowEnv('/abs/path/project');
     expect(env).toEqual({ token: '' });
   });
 });
