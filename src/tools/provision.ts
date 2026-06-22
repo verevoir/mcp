@@ -449,40 +449,63 @@ function safeGet(obj: unknown, key: string): unknown {
 function findStatusAndCode(err: unknown): { status?: number; code?: string } {
   const seen = new Set<unknown>();
   const stack: unknown[] = [err];
-  let status: number | undefined;
+  let errorStatus: number | undefined; // a 4xx/5xx — the operative failure
+  let benignStatus: number | undefined; // a 2xx/3xx on an outer shell — a fallback
   let code: string | undefined;
   let guard = 0;
-  while (stack.length > 0 && guard++ < 32) {
+  while (stack.length > 0 && guard++ < 64) {
     const cur = stack.pop();
     if (cur === null || (typeof cur !== 'object' && typeof cur !== 'function')) continue;
     if (seen.has(cur)) continue;
     seen.add(cur);
 
-    if (status === undefined) {
-      const s = safeGet(cur, 'status') ?? safeGet(cur, 'statusCode');
-      if (typeof s === 'number') status = s;
+    const s = safeGet(cur, 'status') ?? safeGet(cur, 'statusCode');
+    if (typeof s === 'number') {
+      if (s >= 400) {
+        errorStatus = s;
+        break; // an error status is the strongest signal — take it and stop
+      }
+      // A 2xx/3xx can sit on an outer `.response` shell while the real error is
+      // on `.cause`; keep it only as a fallback and keep walking for a 4xx/5xx.
+      if (benignStatus === undefined) benignStatus = s;
     }
     if (code === undefined) {
       const c = safeGet(cur, 'code');
       if (typeof c === 'string' && NETWORK_ERROR_CODES.has(c)) code = c;
     }
-    if (status !== undefined) break; // a status is the strongest signal — stop
 
     stack.push(safeGet(cur, 'cause'));
     stack.push(safeGet(cur, 'response'));
     const errs = safeGet(cur, 'errors');
     if (Array.isArray(errs)) for (const e of errs) stack.push(e);
   }
-  return { status, code };
+  return { status: errorStatus ?? benignStatus, code };
 }
 
-/** Redact obvious credential shapes before a free-text reason reaches the
- * model-visible frame — a provider error can echo the key it rejected. */
+/** Redact credential shapes before a free-text reason reaches the model-visible
+ * frame — a provider error can echo the key it rejected. This runs only on the
+ * last-resort fallback (no status, no code, no recognised vocabulary), the
+ * lowest-legibility path, and the leak risk is asymmetric — a leaked key is a
+ * breach surface, an over-redacted unclassified error just costs a little detail
+ * we still have in the logs. So it's a deliberately BROAD brush rather than a
+ * whack-a-mole list of provider key prefixes: any long token-shaped run that
+ * mixes letters and digits is scrubbed (keys, base64, JWT segments, SHAs),
+ * while ordinary prose — which rarely hits 20+ chars carrying a digit — is left
+ * legible. Explicit JWT and Bearer rules cover the dotted/spaced shapes a single
+ * run would miss. */
 function redactSecrets(text: string): string {
-  return text
-    .replace(/\bBearer\s+[\w.\-]{8,}/gi, 'Bearer ‹redacted›')
-    .replace(/\b(sk|pk|rk|api)[-_][A-Za-z0-9._-]{6,}/gi, '$1-‹redacted›')
-    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, '‹redacted›');
+  return (
+    text
+      // JWT — the dots break a single-run match, so handle it explicitly.
+      .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '‹redacted›')
+      // `Bearer <token>` — the space breaks a single-run match.
+      .replace(/\bBearer\s+[\w.\-]{8,}/gi, 'Bearer ‹redacted›')
+      // Broad brush: a long run that contains BOTH a letter and a digit — the
+      // signature of a key / base64 / hash, not of an English word.
+      .replace(/[A-Za-z0-9_-]{20,}/g, (m) =>
+        /[A-Za-z]/.test(m) && /\d/.test(m) ? '‹redacted›' : m
+      )
+  );
 }
 
 /** Classify a concern-tagging failure into a terse, legible one-line reason, so
@@ -512,7 +535,11 @@ export function classifyTaggingError(err: unknown): string {
       typeof rawMessage === 'string' ? rawMessage : typeof err === 'string' ? err : ''
     ).trim();
 
-    if (/fetch failed|network error|socket hang up|getaddrinfo|econn/i.test(message))
+    if (
+      /fetch failed|network error|socket hang up|getaddrinfo|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(
+        message
+      )
+    )
       return 'could not reach the provider (network error)';
     if (/unauthor|invalid (x-)?api[- ]?key|authentication[_ ]?error/i.test(message))
       return 'provider rejected the key (it may be expired or revoked)';

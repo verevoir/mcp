@@ -310,6 +310,23 @@ describe('classifyTaggingError (STDIO-367 — legible degrade reason)', () => {
     expect(classifyTaggingError(agg)).toMatch(/server error.*503/i);
   });
 
+  it('prefers an error status on .cause over a benign 200 on the outer .response', () => {
+    // OpenAI-compat SDKs carry a 200-ish response shell while the real failure
+    // sits on .cause — the operative status must win, not the benign one.
+    const wrapped = Object.assign(new Error('wrapped'), {
+      response: { status: 200 },
+      cause: { status: 401 },
+    });
+    expect(classifyTaggingError(wrapped)).toMatch(/401.*expired|expired.*revoked/i);
+  });
+
+  it('does NOT treat "reconnect"/"preconnect" prose as a network failure', () => {
+    // The old `econn` substring misfired on any word containing "econn".
+    expect(classifyTaggingError(new Error('attempting to reconnect the websocket pool'))).toBe(
+      'attempting to reconnect the websocket pool'
+    );
+  });
+
   it('does NOT treat a bare digit in incidental text as a status', () => {
     // The old version misfired here, asserting a false cause.
     const reason = classifyTaggingError(new Error('Loaded 401 practices from the corpus'));
@@ -347,6 +364,19 @@ trace below`)
     );
     expect(reason).not.toContain('sk-live-ABC123XYZ456');
     expect(reason).toContain('redacted');
+  });
+
+  it('redacts a JWT echoed in the fallback reason', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQ1234567890abcdef';
+    const reason = classifyTaggingError(new Error(`bad token ${jwt} rejected`));
+    expect(reason).not.toContain('eyJ');
+    expect(reason).toContain('redacted');
+  });
+
+  it('leaves ordinary diagnostic prose legible (no over-redaction)', () => {
+    // No long letter+digit run, so nothing is scrubbed — the reason stays useful.
+    const reason = classifyTaggingError(new Error('api-server-unreachable after 3 retries'));
+    expect(reason).toBe('api-server-unreachable after 3 retries');
   });
 
   it('handles a non-Error throwable without crashing', () => {
