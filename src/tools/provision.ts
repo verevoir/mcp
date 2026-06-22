@@ -418,6 +418,57 @@ export function reasoningProvidersSummary(): string {
   );
 }
 
+/** Classify a concern-tagging failure into a terse, legible one-line reason, so
+ * the degrade-to-floor note tells the operator WHICH failure it was — an expired
+ * or revoked key, a rate limit, or the network — instead of dumping a raw,
+ * possibly multi-line provider error into the frame (failure-legibility).
+ *
+ * Provider-agnostic: the reasoning provider is configurable, so this reads an
+ * HTTP status / network code off the error when one is present (the shape every
+ * SDK exposes) and otherwise falls back to the first line of the message,
+ * trimmed — never a stack dump. */
+export function classifyTaggingError(err: unknown): string {
+  const e = err as
+    | { status?: unknown; statusCode?: unknown; code?: unknown; message?: unknown }
+    | null
+    | undefined;
+  const status =
+    typeof e?.status === 'number'
+      ? e.status
+      : typeof e?.statusCode === 'number'
+        ? e.statusCode
+        : undefined;
+  const code = typeof e?.code === 'string' ? e.code : undefined;
+  const message = (typeof e?.message === 'string' ? e.message : String(err)).trim();
+
+  // An HTTP status from the provider — the common, classifiable cases.
+  if (status === 401 || status === 403)
+    return `provider rejected the key (${status} — it may be expired, revoked, or lack access)`;
+  if (status === 429) return 'provider rate-limited the request (429)';
+  if (typeof status === 'number' && status >= 500) return `provider server error (${status})`;
+
+  // Network-level failures carry a code, not an HTTP status.
+  const NETWORK_CODES = new Set([
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'EAI_AGAIN',
+  ]);
+  if (code && NETWORK_CODES.has(code)) return `could not reach the provider (${code})`;
+  if (/fetch failed|network error|socket hang up/i.test(message))
+    return 'could not reach the provider (network error)';
+
+  // Some SDKs put the status only in the message text — recover the common two.
+  if (/\b401\b|unauthor|invalid (x-)?api[- ]?key/i.test(message))
+    return 'provider rejected the key (401 — it may be expired or revoked)';
+  if (/\b429\b|rate[- ]?limit/i.test(message)) return 'provider rate-limited the request (429)';
+
+  // Fallback: the first line, trimmed — a clean reason, never a multi-line dump.
+  const firstLine = message.split('\n')[0]?.slice(0, 200).trim();
+  return firstLine || 'unknown error';
+}
+
 /** What a `provision` call asks for. A bare string is shorthand for
  * `{ prose }` (the default catalogue), so existing callers keep working. */
 export interface ProvisionRequest {
@@ -473,7 +524,7 @@ export async function provisionFrame(req: string | ProvisionRequest): Promise<st
         note = `concern-tagged for this work (${name})`;
       } catch (err) {
         ids = [...FOUNDATIONAL];
-        note = `foundational floor only — concern-tagging failed (${String(err)})`;
+        note = `foundational floor only — concern-tagging failed: ${classifyTaggingError(err)}`;
       }
     } else {
       ids = [...FOUNDATIONAL];
