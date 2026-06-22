@@ -452,8 +452,11 @@ function findStatusAndCode(err: unknown): { status?: number; code?: string } {
   let errorStatus: number | undefined; // a 4xx/5xx — the operative failure
   let benignStatus: number | undefined; // a 2xx/3xx on an outer shell — a fallback
   let code: string | undefined;
+  // Bounded so a pathological/cyclic error graph can't spin; generous enough to
+  // cover any realistic AggregateError fan-out (real ones hold a handful of
+  // retry errors, not dozens) so a buried status isn't missed.
   let guard = 0;
-  while (stack.length > 0 && guard++ < 64) {
+  while (stack.length > 0 && guard++ < 256) {
     const cur = stack.pop();
     if (cur === null || (typeof cur !== 'object' && typeof cur !== 'function')) continue;
     if (seen.has(cur)) continue;
