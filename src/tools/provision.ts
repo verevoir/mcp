@@ -418,55 +418,114 @@ export function reasoningProvidersSummary(): string {
   );
 }
 
+// Network-level failure codes (no HTTP status) the runtime / fetch surfaces.
+const NETWORK_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'ECONNRESET',
+  'EAI_AGAIN',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+/** Read a property that may be defined via a getter that itself throws (SDK
+ * error objects routinely expose derived fields this way). Never throws. */
+function safeGet(obj: unknown, key: string): unknown {
+  if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return undefined;
+  try {
+    return (obj as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Scan an error and its nested carriers — the `cause` chain, a `.response`
+ * (axios / openai-compat shape), and `AggregateError`'s `.errors` — for the
+ * first HTTP status and the first network code present. Bounded and cycle-safe.
+ * This is what "provider-agnostic" actually requires: a status is rarely on the
+ * top-level object across every SDK. */
+function findStatusAndCode(err: unknown): { status?: number; code?: string } {
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [err];
+  let status: number | undefined;
+  let code: string | undefined;
+  let guard = 0;
+  while (stack.length > 0 && guard++ < 32) {
+    const cur = stack.pop();
+    if (cur === null || (typeof cur !== 'object' && typeof cur !== 'function')) continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+
+    if (status === undefined) {
+      const s = safeGet(cur, 'status') ?? safeGet(cur, 'statusCode');
+      if (typeof s === 'number') status = s;
+    }
+    if (code === undefined) {
+      const c = safeGet(cur, 'code');
+      if (typeof c === 'string' && NETWORK_ERROR_CODES.has(c)) code = c;
+    }
+    if (status !== undefined) break; // a status is the strongest signal — stop
+
+    stack.push(safeGet(cur, 'cause'));
+    stack.push(safeGet(cur, 'response'));
+    const errs = safeGet(cur, 'errors');
+    if (Array.isArray(errs)) for (const e of errs) stack.push(e);
+  }
+  return { status, code };
+}
+
+/** Redact obvious credential shapes before a free-text reason reaches the
+ * model-visible frame — a provider error can echo the key it rejected. */
+function redactSecrets(text: string): string {
+  return text
+    .replace(/\bBearer\s+[\w.\-]{8,}/gi, 'Bearer ‹redacted›')
+    .replace(/\b(sk|pk|rk|api)[-_][A-Za-z0-9._-]{6,}/gi, '$1-‹redacted›')
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, '‹redacted›');
+}
+
 /** Classify a concern-tagging failure into a terse, legible one-line reason, so
  * the degrade-to-floor note tells the operator WHICH failure it was — an expired
- * or revoked key, a rate limit, or the network — instead of dumping a raw,
- * possibly multi-line provider error into the frame (failure-legibility).
+ * or revoked key, a rate limit, a server error, or the network — instead of
+ * dumping a raw, possibly multi-line provider error into the frame
+ * (failure-legibility).
  *
- * Provider-agnostic: the reasoning provider is configurable, so this reads an
- * HTTP status / network code off the error when one is present (the shape every
- * SDK exposes) and otherwise falls back to the first line of the message,
- * trimmed — never a stack dump. */
+ * TOTAL by contract: this runs inside the `autoTag` catch whose whole job is to
+ * never block the work, so it must never throw. Every field is read defensively
+ * and the whole body is guarded — a hostile error shape degrades to a generic
+ * reason, never an exception. Status/code are gathered from the error and its
+ * nested carriers (provider-agnostic); message-text matching is a last resort
+ * and trusts only clear auth / rate-limit / network vocabulary, never a bare
+ * digit (which misfires on incidental text like "Loaded 401 practices"). */
 export function classifyTaggingError(err: unknown): string {
-  const e = err as
-    | { status?: unknown; statusCode?: unknown; code?: unknown; message?: unknown }
-    | null
-    | undefined;
-  const status =
-    typeof e?.status === 'number'
-      ? e.status
-      : typeof e?.statusCode === 'number'
-        ? e.statusCode
-        : undefined;
-  const code = typeof e?.code === 'string' ? e.code : undefined;
-  const message = (typeof e?.message === 'string' ? e.message : String(err)).trim();
+  try {
+    const { status, code } = findStatusAndCode(err);
+    if (status === 401 || status === 403)
+      return `provider rejected the key (${status} — it may be expired, revoked, or lack access)`;
+    if (status === 429) return 'provider rate-limited the request (429)';
+    if (status !== undefined && status >= 500) return `provider server error (${status})`;
+    if (code) return `could not reach the provider (${code})`;
 
-  // An HTTP status from the provider — the common, classifiable cases.
-  if (status === 401 || status === 403)
-    return `provider rejected the key (${status} — it may be expired, revoked, or lack access)`;
-  if (status === 429) return 'provider rate-limited the request (429)';
-  if (typeof status === 'number' && status >= 500) return `provider server error (${status})`;
+    const rawMessage = safeGet(err, 'message');
+    const message = (
+      typeof rawMessage === 'string' ? rawMessage : typeof err === 'string' ? err : ''
+    ).trim();
 
-  // Network-level failures carry a code, not an HTTP status.
-  const NETWORK_CODES = new Set([
-    'ECONNREFUSED',
-    'ENOTFOUND',
-    'ETIMEDOUT',
-    'ECONNRESET',
-    'EAI_AGAIN',
-  ]);
-  if (code && NETWORK_CODES.has(code)) return `could not reach the provider (${code})`;
-  if (/fetch failed|network error|socket hang up/i.test(message))
-    return 'could not reach the provider (network error)';
+    if (/fetch failed|network error|socket hang up|getaddrinfo|econn/i.test(message))
+      return 'could not reach the provider (network error)';
+    if (/unauthor|invalid (x-)?api[- ]?key|authentication[_ ]?error/i.test(message))
+      return 'provider rejected the key (it may be expired or revoked)';
+    if (/rate[- ]?limit|too many requests/i.test(message))
+      return 'provider rate-limited the request (429)';
 
-  // Some SDKs put the status only in the message text — recover the common two.
-  if (/\b401\b|unauthor|invalid (x-)?api[- ]?key/i.test(message))
-    return 'provider rejected the key (401 — it may be expired or revoked)';
-  if (/\b429\b|rate[- ]?limit/i.test(message)) return 'provider rate-limited the request (429)';
-
-  // Fallback: the first line, trimmed — a clean reason, never a multi-line dump.
-  const firstLine = message.split('\n')[0]?.slice(0, 200).trim();
-  return firstLine || 'unknown error';
+    // Fallback: the first line only, trimmed and secret-redacted — a clean
+    // reason, never a multi-line stack dump or an echoed credential.
+    const firstLine = redactSecrets(message.split('\n')[0]?.slice(0, 200).trim() ?? '');
+    return firstLine || 'unknown error';
+  } catch {
+    return 'unknown error';
+  }
 }
 
 /** What a `provision` call asks for. A bare string is shorthand for

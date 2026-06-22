@@ -286,10 +286,49 @@ describe('classifyTaggingError (STDIO-367 — legible degrade reason)', () => {
     ).toMatch(/could not reach.*ECONNREFUSED/i);
   });
 
-  it('recovers a 401 carried only in the message text', () => {
+  it('recovers an auth failure carried only in the message text', () => {
     expect(classifyTaggingError(new Error('Request failed: 401 Unauthorized'))).toMatch(
-      /401.*expired/i
+      /expired|revoked/i
     );
+  });
+
+  it('reads a status nested under .response (axios / openai-compat shape)', () => {
+    expect(
+      classifyTaggingError({ response: { status: 429 }, message: 'Too Many Requests' })
+    ).toMatch(/rate-limited.*429/i);
+  });
+
+  it('reads a status from the cause chain (Node fetch wraps the real error)', () => {
+    const wrapped = Object.assign(new Error('fetch failed'), { cause: { status: 401 } });
+    expect(classifyTaggingError(wrapped)).toMatch(/401.*expired|expired.*revoked/i);
+  });
+
+  it('reads a status from an AggregateError-style .errors list', () => {
+    const agg = Object.assign(new Error('all attempts failed'), {
+      errors: [{ message: 'a' }, { status: 503 }],
+    });
+    expect(classifyTaggingError(agg)).toMatch(/server error.*503/i);
+  });
+
+  it('does NOT treat a bare digit in incidental text as a status', () => {
+    // The old version misfired here, asserting a false cause.
+    const reason = classifyTaggingError(new Error('Loaded 401 practices from the corpus'));
+    expect(reason).not.toMatch(/rejected the key|rate-limited/i);
+    expect(reason).toBe('Loaded 401 practices from the corpus');
+  });
+
+  it('never throws, even when the error reads its fields through throwing getters', () => {
+    const hostile = {
+      get status(): never {
+        throw new Error('boom');
+      },
+      get message(): never {
+        throw new Error('boom');
+      },
+    };
+    // The whole point of the catch this runs inside is to never block the work.
+    expect(() => classifyTaggingError(hostile)).not.toThrow();
+    expect(typeof classifyTaggingError(hostile)).toBe('string');
   });
 
   it('falls back to the first line of the message, never a multi-line dump', () => {
@@ -302,9 +341,17 @@ trace below`)
     expect(reason).not.toContain('stack');
   });
 
+  it('redacts an echoed credential from the fallback reason', () => {
+    const reason = classifyTaggingError(
+      new Error('Authorization header bearer sk-live-ABC123XYZ456 DEF malformed')
+    );
+    expect(reason).not.toContain('sk-live-ABC123XYZ456');
+    expect(reason).toContain('redacted');
+  });
+
   it('handles a non-Error throwable without crashing', () => {
     expect(classifyTaggingError('just a string')).toBe('just a string');
-    expect(classifyTaggingError(null)).toBe('null');
+    expect(classifyTaggingError(null)).toBe('unknown error');
   });
 });
 
