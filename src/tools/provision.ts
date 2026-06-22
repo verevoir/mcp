@@ -418,6 +418,146 @@ export function reasoningProvidersSummary(): string {
   );
 }
 
+// Network-level failure codes (no HTTP status) the runtime / fetch surfaces.
+const NETWORK_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'ECONNRESET',
+  'EAI_AGAIN',
+  'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+/** Read a property that may be defined via a getter that itself throws (SDK
+ * error objects routinely expose derived fields this way). Never throws. */
+function safeGet(obj: unknown, key: string): unknown {
+  if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) return undefined;
+  try {
+    return (obj as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Scan an error and its nested carriers — the `cause` chain, a `.response`
+ * (axios / openai-compat shape), and `AggregateError`'s `.errors` — for the
+ * first HTTP status and the first network code present. Bounded and cycle-safe.
+ * This is what "provider-agnostic" actually requires: a status is rarely on the
+ * top-level object across every SDK. */
+function findStatusAndCode(err: unknown): { status?: number; code?: string } {
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [err];
+  let errorStatus: number | undefined; // a 4xx/5xx — the operative failure
+  let benignStatus: number | undefined; // a 2xx/3xx on an outer shell — a fallback
+  let code: string | undefined;
+  // Bounded so a pathological/cyclic error graph can't spin; generous enough to
+  // cover any realistic AggregateError fan-out (real ones hold a handful of
+  // retry errors, not dozens) so a buried status isn't missed.
+  let guard = 0;
+  while (stack.length > 0 && guard++ < 256) {
+    const cur = stack.pop();
+    if (cur === null || (typeof cur !== 'object' && typeof cur !== 'function')) continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+
+    const s = safeGet(cur, 'status') ?? safeGet(cur, 'statusCode');
+    if (typeof s === 'number') {
+      if (s >= 400) {
+        errorStatus = s;
+        break; // an error status is the strongest signal — take it and stop
+      }
+      // A 2xx/3xx can sit on an outer `.response` shell while the real error is
+      // on `.cause`; keep it only as a fallback and keep walking for a 4xx/5xx.
+      if (benignStatus === undefined) benignStatus = s;
+    }
+    if (code === undefined) {
+      const c = safeGet(cur, 'code');
+      if (typeof c === 'string' && NETWORK_ERROR_CODES.has(c)) code = c;
+    }
+
+    stack.push(safeGet(cur, 'cause'));
+    stack.push(safeGet(cur, 'response'));
+    const errs = safeGet(cur, 'errors');
+    if (Array.isArray(errs)) for (const e of errs) stack.push(e);
+  }
+  return { status: errorStatus ?? benignStatus, code };
+}
+
+/** Redact credential shapes before a free-text reason reaches the model-visible
+ * frame — a provider error can echo the key it rejected. This runs only on the
+ * last-resort fallback (no status, no code, no recognised vocabulary), the
+ * lowest-legibility path, and the leak risk is asymmetric — a leaked key is a
+ * breach surface, an over-redacted unclassified error just costs a little detail
+ * we still have in the logs. So it's a deliberately BROAD brush rather than a
+ * whack-a-mole list of provider key prefixes: any long token-shaped run that
+ * mixes letters and digits is scrubbed (keys, base64, JWT segments, SHAs),
+ * while ordinary prose — which rarely hits 20+ chars carrying a digit — is left
+ * legible. Explicit JWT and Bearer rules cover the dotted/spaced shapes a single
+ * run would miss. */
+function redactSecrets(text: string): string {
+  return (
+    text
+      // JWT — the dots break a single-run match, so handle it explicitly.
+      .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, '‹redacted›')
+      // `Bearer <token>` — the space breaks a single-run match.
+      .replace(/\bBearer\s+[\w.\-]{8,}/gi, 'Bearer ‹redacted›')
+      // Broad brush: a long run that contains BOTH a letter and a digit — the
+      // signature of a key / base64 / hash, not of an English word.
+      .replace(/[A-Za-z0-9_-]{20,}/g, (m) =>
+        /[A-Za-z]/.test(m) && /\d/.test(m) ? '‹redacted›' : m
+      )
+  );
+}
+
+/** Classify a concern-tagging failure into a terse, legible one-line reason, so
+ * the degrade-to-floor note tells the operator WHICH failure it was — an expired
+ * or revoked key, a rate limit, a server error, or the network — instead of
+ * dumping a raw, possibly multi-line provider error into the frame
+ * (failure-legibility).
+ *
+ * TOTAL by contract: this runs inside the `autoTag` catch whose whole job is to
+ * never block the work, so it must never throw. Every field is read defensively
+ * and the whole body is guarded — a hostile error shape degrades to a generic
+ * reason, never an exception. Status/code are gathered from the error and its
+ * nested carriers (provider-agnostic); message-text matching is a last resort
+ * and trusts only clear auth / rate-limit / network vocabulary, never a bare
+ * digit (which misfires on incidental text like "Loaded 401 practices"). */
+export function classifyTaggingError(err: unknown): string {
+  try {
+    const { status, code } = findStatusAndCode(err);
+    if (status === 401 || status === 403)
+      return `provider rejected the key (${status} — it may be expired, revoked, or lack access)`;
+    if (status === 429) return 'provider rate-limited the request (429)';
+    if (status !== undefined && status >= 500) return `provider server error (${status})`;
+    if (code) return `could not reach the provider (${code})`;
+
+    const rawMessage = safeGet(err, 'message');
+    const message = (
+      typeof rawMessage === 'string' ? rawMessage : typeof err === 'string' ? err : ''
+    ).trim();
+
+    if (
+      /fetch failed|network error|socket hang up|getaddrinfo|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(
+        message
+      )
+    )
+      return 'could not reach the provider (network error)';
+    if (/unauthor|invalid (x-)?api[- ]?key|authentication[_ ]?error/i.test(message))
+      return 'provider rejected the key (it may be expired or revoked)';
+    if (/rate[- ]?limit|too many requests/i.test(message))
+      return 'provider rate-limited the request (429)';
+
+    // Fallback: the first line only, trimmed and secret-redacted — a clean
+    // reason, never a multi-line stack dump or an echoed credential.
+    const firstLine = redactSecrets(message.split('\n')[0]?.slice(0, 200).trim() ?? '');
+    return firstLine || 'unknown error';
+  } catch {
+    return 'unknown error';
+  }
+}
+
 /** What a `provision` call asks for. A bare string is shorthand for
  * `{ prose }` (the default catalogue), so existing callers keep working. */
 export interface ProvisionRequest {
@@ -473,7 +613,7 @@ export async function provisionFrame(req: string | ProvisionRequest): Promise<st
         note = `concern-tagged for this work (${name})`;
       } catch (err) {
         ids = [...FOUNDATIONAL];
-        note = `foundational floor only — concern-tagging failed (${String(err)})`;
+        note = `foundational floor only — concern-tagging failed: ${classifyTaggingError(err)}`;
       }
     } else {
       ids = [...FOUNDATIONAL];

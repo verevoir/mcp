@@ -15,6 +15,7 @@ import {
   renderFrame,
   reasoningProvider,
   reasoningProvidersSummary,
+  classifyTaggingError,
   listPracticeIds,
   loadConcernMenu,
   renderMenu,
@@ -214,6 +215,33 @@ describe('provisionFrame — autoTag (headless / weak top of stack)', () => {
     expect(frame).toContain('Write tests.');
   });
 
+  it('renders a legible classified reason on failure, not a raw provider error dump', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    // A provider 401 whose raw message is a multi-line JSON blob.
+    vi.mocked(provisionPractices).mockRejectedValue(
+      Object.assign(
+        new Error(`401
+{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`),
+        { status: 401 }
+      )
+    );
+    vi.mocked(pickSourceAdapter).mockResolvedValue(
+      adapterWith({
+        'automated-testing': practice('Automated testing', 'verified', 'Write tests.'),
+        'input-validation': practice('Input validation', 'defended', 'Validate input.'),
+      }) as never
+    );
+
+    const frame = await provisionFrame({ prose: 'do the thing', autoTag: true });
+
+    // The operator learns it was the key, expired/revoked — not a JSON dump.
+    expect(frame).toContain('concern-tagging failed');
+    expect(frame).toMatch(/expired.*revoked|expired or revoked/i);
+    expect(frame).not.toContain('authentication_error');
+    // …and it still degrades to the floor rather than blocking the work.
+    expect(frame).toContain('Write tests.');
+  });
+
   it('reports the practices it provisioned even when none can be read from the corpus', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-test';
     vi.mocked(provisionPractices).mockResolvedValue(['automated-testing', 'input-validation']);
@@ -230,6 +258,130 @@ describe('provisionFrame — autoTag (headless / weak top of stack)', () => {
     expect(frame).toContain('none could be');
     expect(frame).toContain('automated-testing');
     expect(frame).toContain('input-validation');
+  });
+});
+
+describe('classifyTaggingError (STDIO-367 — legible degrade reason)', () => {
+  it('reads a 401 status as an expired-or-revoked key', () => {
+    expect(classifyTaggingError(Object.assign(new Error('nope'), { status: 401 }))).toMatch(
+      /401.*expired|expired.*revoked/i
+    );
+  });
+
+  it('reads a 429 status as a rate limit', () => {
+    expect(classifyTaggingError(Object.assign(new Error('slow down'), { status: 429 }))).toMatch(
+      /rate-limited.*429/i
+    );
+  });
+
+  it('reads a 5xx status as a provider server error', () => {
+    expect(classifyTaggingError(Object.assign(new Error('boom'), { status: 503 }))).toMatch(
+      /server error.*503/i
+    );
+  });
+
+  it('reads a network code as an unreachable provider', () => {
+    expect(
+      classifyTaggingError(Object.assign(new Error('connect'), { code: 'ECONNREFUSED' }))
+    ).toMatch(/could not reach.*ECONNREFUSED/i);
+  });
+
+  it('recovers an auth failure carried only in the message text', () => {
+    expect(classifyTaggingError(new Error('Request failed: 401 Unauthorized'))).toMatch(
+      /expired|revoked/i
+    );
+  });
+
+  it('reads a status nested under .response (axios / openai-compat shape)', () => {
+    expect(
+      classifyTaggingError({ response: { status: 429 }, message: 'Too Many Requests' })
+    ).toMatch(/rate-limited.*429/i);
+  });
+
+  it('reads a status from the cause chain (Node fetch wraps the real error)', () => {
+    const wrapped = Object.assign(new Error('fetch failed'), { cause: { status: 401 } });
+    expect(classifyTaggingError(wrapped)).toMatch(/401.*expired|expired.*revoked/i);
+  });
+
+  it('reads a status from an AggregateError-style .errors list', () => {
+    const agg = Object.assign(new Error('all attempts failed'), {
+      errors: [{ message: 'a' }, { status: 503 }],
+    });
+    expect(classifyTaggingError(agg)).toMatch(/server error.*503/i);
+  });
+
+  it('prefers an error status on .cause over a benign 200 on the outer .response', () => {
+    // OpenAI-compat SDKs carry a 200-ish response shell while the real failure
+    // sits on .cause — the operative status must win, not the benign one.
+    const wrapped = Object.assign(new Error('wrapped'), {
+      response: { status: 200 },
+      cause: { status: 401 },
+    });
+    expect(classifyTaggingError(wrapped)).toMatch(/401.*expired|expired.*revoked/i);
+  });
+
+  it('does NOT treat "reconnect"/"preconnect" prose as a network failure', () => {
+    // The old `econn` substring misfired on any word containing "econn".
+    expect(classifyTaggingError(new Error('attempting to reconnect the websocket pool'))).toBe(
+      'attempting to reconnect the websocket pool'
+    );
+  });
+
+  it('does NOT treat a bare digit in incidental text as a status', () => {
+    // The old version misfired here, asserting a false cause.
+    const reason = classifyTaggingError(new Error('Loaded 401 practices from the corpus'));
+    expect(reason).not.toMatch(/rejected the key|rate-limited/i);
+    expect(reason).toBe('Loaded 401 practices from the corpus');
+  });
+
+  it('never throws, even when the error reads its fields through throwing getters', () => {
+    const hostile = {
+      get status(): never {
+        throw new Error('boom');
+      },
+      get message(): never {
+        throw new Error('boom');
+      },
+    };
+    // The whole point of the catch this runs inside is to never block the work.
+    expect(() => classifyTaggingError(hostile)).not.toThrow();
+    expect(typeof classifyTaggingError(hostile)).toBe('string');
+  });
+
+  it('falls back to the first line of the message, never a multi-line dump', () => {
+    const reason = classifyTaggingError(
+      new Error(`something odd happened
+with a stack
+trace below`)
+    );
+    expect(reason).toBe('something odd happened');
+    expect(reason).not.toContain('stack');
+  });
+
+  it('redacts an echoed credential from the fallback reason', () => {
+    const reason = classifyTaggingError(
+      new Error('Authorization header bearer sk-live-ABC123XYZ456 DEF malformed')
+    );
+    expect(reason).not.toContain('sk-live-ABC123XYZ456');
+    expect(reason).toContain('redacted');
+  });
+
+  it('redacts a JWT echoed in the fallback reason', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQ1234567890abcdef';
+    const reason = classifyTaggingError(new Error(`bad token ${jwt} rejected`));
+    expect(reason).not.toContain('eyJ');
+    expect(reason).toContain('redacted');
+  });
+
+  it('leaves ordinary diagnostic prose legible (no over-redaction)', () => {
+    // No long letter+digit run, so nothing is scrubbed — the reason stays useful.
+    const reason = classifyTaggingError(new Error('api-server-unreachable after 3 retries'));
+    expect(reason).toBe('api-server-unreachable after 3 retries');
+  });
+
+  it('handles a non-Error throwable without crashing', () => {
+    expect(classifyTaggingError('just a string')).toBe('just a string');
+    expect(classifyTaggingError(null)).toBe('unknown error');
   });
 });
 
