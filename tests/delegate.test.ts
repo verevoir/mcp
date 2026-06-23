@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { registerModelCatalog } from '@verevoir/llm';
+import { registerModelCatalog, type PerModelUsage } from '@verevoir/llm';
+import type { VerifyResult } from '@verevoir/recipes/engine';
 import {
   delegate,
   workerConfig,
@@ -7,6 +8,8 @@ import {
   resolveWorkerModel,
   clearWorkerModelsCache,
 } from '../src/tools/delegate.js';
+import { roundUsage } from '../src/metering.js';
+import type { Reviewer } from '../src/tools/review.js';
 
 const ENV = ['AIGENCY_WORKER_URL', 'AIGENCY_WORKER_MODEL', 'AIGENCY_WORKER_API_KEY'];
 const saved: Record<string, string | undefined> = {};
@@ -339,5 +342,281 @@ describe('delegate metering (STDIO-388)', () => {
     expect(out).toContain('reviewed');
     expect(out).toContain('no token usage');
     expect(out).not.toContain('metering total');
+  });
+});
+
+describe('delegate — verify (antagonistic review on the reasoning tier)', () => {
+  const REJECT: VerifyResult = {
+    ok: false,
+    findings: [{ kind: 'REVIEW', where: 'tests', message: 'no error-path coverage' }],
+  };
+  const APPROVE: VerifyResult = { ok: true, findings: [] };
+
+  /** A reviewer factory returning a verifier scripted to a fixed verdict
+   * sequence, with fixed accumulated usage. */
+  function scriptedReviewer(
+    verdicts: VerifyResult[],
+    usage: PerModelUsage[] = [],
+    model = 'fake-reasoner'
+  ): () => Promise<Reviewer> {
+    let i = 0;
+    return async () => ({
+      model,
+      verifier: async () => verdicts[Math.min(i++, verdicts.length - 1)],
+      usage: () => usage,
+    });
+  }
+
+  const noReviewer = async () => null;
+  /** A reviewer whose verify call throws (a transport blip), optionally after
+   * recording usage — so the catch path's metering can be checked. */
+  const throwingReviewer =
+    (usage: PerModelUsage[] = []) =>
+    async (): Promise<Reviewer> => ({
+      model: 'fake-reasoner',
+      verifier: async () => {
+        throw new Error('reasoner 503');
+      },
+      usage: () => usage,
+    });
+
+  function userTurnOf(fetchMock: ReturnType<typeof okFetch>, call: number): string {
+    const body = JSON.parse((fetchMock.mock.calls[call][1] as RequestInit).body as string);
+    return body.messages.find((m: { role: string }) => m.role === 'user').content;
+  }
+
+  it('loops the worker on the review findings and returns the approved result with the verdict', async () => {
+    setEnv('qwen2.5:7b');
+    const fetchMock = okFetch('WORKER OUTPUT');
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await delegate(
+      { prompt: 'build the thing', governed: false, verify: true },
+      undefined,
+      undefined,
+      scriptedReviewer([REJECT, APPROVE])
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2); // initial + one fix re-produce
+    // the re-produce prompt carries the review findings for the worker to fix
+    const fix = userTurnOf(fetchMock, 1);
+    expect(fix).toContain('rejected in an antagonistic review');
+    expect(fix).toContain('no error-path coverage');
+    expect(out).toContain('WORKER OUTPUT');
+    expect(out).toContain('reviewed on fake-reasoner (reasoning): approved after 2 attempt(s)');
+  });
+
+  it('returns a not-approved note with the findings when the review never passes', async () => {
+    setEnv('qwen2.5:7b');
+    const fetchMock = okFetch('WORKER OUTPUT');
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await delegate(
+      { prompt: 'p', governed: false, verify: true },
+      undefined,
+      undefined,
+      scriptedReviewer([REJECT])
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(3); // initial + 2 re-produces, then the cap
+    expect(out).toContain('NOT approved after 3 attempt(s)');
+    expect(out).toContain('no error-path coverage');
+  });
+
+  it('returns the worker output unreviewed with a note when no reasoning tier is configured', async () => {
+    setEnv('qwen2.5:7b');
+    const fetchMock = okFetch('WORKER OUTPUT');
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await delegate(
+      { prompt: 'p', governed: false, verify: true },
+      undefined,
+      undefined,
+      noReviewer
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(out).toContain('WORKER OUTPUT');
+    expect(out).toContain('no reasoning-tier model is configured');
+  });
+
+  it('returns the transport message and never consults the reviewer when the worker is unreachable', async () => {
+    setEnv('qwen2.5:7b');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('ECONNREFUSED');
+      })
+    );
+    let reviewerCalled = false;
+    const out = await delegate(
+      { prompt: 'p', governed: false, verify: true },
+      undefined,
+      undefined,
+      async () => {
+        reviewerCalled = true;
+        return null;
+      }
+    );
+    expect(out).toContain('Could not reach the worker');
+    expect(reviewerCalled).toBe(false); // a down worker is not a review failure
+  });
+
+  it('degrades to returning the work unreviewed when the reviewer call errors', async () => {
+    setEnv('qwen2.5:7b');
+    const fetchMock = okFetch('WORKER OUTPUT');
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await delegate(
+      { prompt: 'p', governed: false, verify: true },
+      undefined,
+      undefined,
+      throwingReviewer()
+    );
+
+    expect(out).toContain('WORKER OUTPUT');
+    expect(out).toContain('verify could not run');
+  });
+
+  it('meters the worker and the reviewer as separate model lines', async () => {
+    delete process.env.AIGENCY_METER;
+    registerModelCatalog([
+      {
+        provider: 'vrftest',
+        family: 'vrf-worker',
+        modelClass: 'extraction',
+        currentId: 'vrf-worker',
+        rates: [0.6, 1.5],
+        label: 'Verify Worker',
+        prefixes: ['vrf-worker'],
+      },
+      {
+        provider: 'vrftest',
+        family: 'vrf-reasoner',
+        modelClass: 'reasoning',
+        currentId: 'vrf-reasoner',
+        rates: [3, 15],
+        label: 'Verify Reasoner',
+        prefixes: ['vrf-reasoner'],
+      },
+    ]);
+    setEnv('vrf-worker', 'https://worker.example/v1', 'sk-x');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({
+            choices: [{ message: { content: 'WORKER OUTPUT' } }],
+            usage: { prompt_tokens: 800, completion_tokens: 200 },
+          }),
+        })
+      )
+    );
+
+    const out = await delegate(
+      { prompt: 'p', governed: false, verify: true, meter: 'totals-only' },
+      undefined,
+      undefined,
+      scriptedReviewer([APPROVE], [roundUsage('vrf-reasoner', 500, 100)], 'vrf-reasoner')
+    );
+
+    expect(out).toContain('metering total');
+    expect(out).toContain('Verify Worker'); // the worker model line
+    expect(out).toContain('Verify Reasoner'); // the reviewer model line, separately metered
+  });
+
+  it('surfaces the first attempt and the outstanding findings when the worker dies on the fix re-produce — never an error stamped approved', async () => {
+    setEnv('qwen2.5:7b');
+    let n = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        n += 1;
+        if (n === 1)
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ choices: [{ message: { content: 'FIRST GOOD OUTPUT' } }] }),
+          });
+        throw new Error('ECONNREFUSED'); // the worker died trying to fix the findings
+      })
+    );
+
+    const out = await delegate(
+      { prompt: 'p', governed: false, verify: true },
+      undefined,
+      undefined,
+      scriptedReviewer([REJECT]) // always rejects → forces a re-produce
+    );
+
+    expect(out).toContain('FIRST GOOD OUTPUT'); // the good first attempt, not the worker error
+    expect(out).toContain('could not be re-run');
+    expect(out).toContain('no error-path coverage'); // the outstanding findings, surfaced
+    expect(out).not.toContain('approved after'); // a worker error is never stamped approved
+  });
+
+  it('never throws when the reviewer factory itself rejects — degrades to a legible note', async () => {
+    setEnv('qwen2.5:7b');
+    vi.stubGlobal('fetch', okFetch('WORKER OUTPUT'));
+
+    const out = await delegate(
+      { prompt: 'p', governed: false, verify: true },
+      undefined,
+      undefined,
+      async () => {
+        throw new Error('reasoner init boom');
+      }
+    );
+
+    expect(out).toContain('WORKER OUTPUT');
+    expect(out).toContain('verify could not run');
+    expect(out).toContain('reasoner init boom');
+  });
+
+  it('keeps the reviewer usage on the meter when the reviewer errors mid-loop', async () => {
+    delete process.env.AIGENCY_METER;
+    registerModelCatalog([
+      {
+        provider: 'vrftest',
+        family: 'vrf-worker',
+        modelClass: 'extraction',
+        currentId: 'vrf-worker',
+        rates: [0.6, 1.5],
+        label: 'Verify Worker',
+        prefixes: ['vrf-worker'],
+      },
+      {
+        provider: 'vrftest',
+        family: 'vrf-reasoner',
+        modelClass: 'reasoning',
+        currentId: 'vrf-reasoner',
+        rates: [3, 15],
+        label: 'Verify Reasoner',
+        prefixes: ['vrf-reasoner'],
+      },
+    ]);
+    setEnv('vrf-worker', 'https://worker.example/v1', 'sk-x');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({
+            choices: [{ message: { content: 'WORKER OUTPUT' } }],
+            usage: { prompt_tokens: 800, completion_tokens: 200 },
+          }),
+        })
+      )
+    );
+
+    const out = await delegate(
+      { prompt: 'p', governed: false, verify: true, meter: 'totals-only' },
+      undefined,
+      undefined,
+      throwingReviewer([roundUsage('vrf-reasoner', 300, 50)])
+    );
+
+    expect(out).toContain('verify could not run'); // the reviewer blew up
+    expect(out).toContain('Verify Reasoner'); // but its already-incurred tokens are still metered
   });
 });

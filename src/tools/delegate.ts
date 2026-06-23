@@ -1,10 +1,18 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { runWithVerify, formatFindings, type VerifyFinding } from '@verevoir/recipes/engine';
 import { provisionFrame } from './provision.js';
+import { reasoningReviewer, type Reviewer } from './review.js';
 import { tierModel } from '../tiers.js';
-import { meterFooter, resolveMeterMode, roundUsage, type MeterMode } from '../metering.js';
+import { meterFooter, resolveMeterMode, type MeterMode } from '../metering.js';
+import { usageFromResponse } from '../openai-compat.js';
 import { warmRegistry } from '../registry.js';
-import type { ModelClass, ModelConnection, PerModelUsage } from '@verevoir/llm';
+import {
+  sumUsages,
+  type ModelClass,
+  type ModelConnection,
+  type PerModelUsage,
+} from '@verevoir/llm';
 
 // DELEGATE (STDIO-345) — hand a self-contained sub-task to a configured WORKER
 // model and return its result. The worker is any OpenAI-compatible chat
@@ -48,38 +56,19 @@ export function workerConfig(): WorkerConfig {
 // unconfigured state.
 const NOT_CONFIGURED = "No worker model is configured for this project's MCP.";
 
-/** The OpenAI-compatible `usage` block, with the cache fields different
- * providers report. `prompt_tokens_details.cached_tokens` (OpenAI) and
- * `prompt_cache_hit_tokens` (DeepSeek) are a SUBSET of `prompt_tokens`. */
-interface WorkerUsage {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  prompt_tokens_details?: { cached_tokens?: number };
-  prompt_cache_hit_tokens?: number;
-}
-
 /** A structured worker call result: the text plus what it cost. `usage` is null
  * when the worker reported none; `ok` is false for a not-configured / error
- * message (so a caller — e.g. the loop meter — can skip pricing it). */
+ * message (so a caller — e.g. the loop meter — can skip pricing it). On the
+ * verify path `usages` carries the per-call rollups across every worker attempt
+ * AND the reviewer (a different model), for the meter; `usage` stays the summed
+ * worker-only rollup for the single-model consumers. */
 export interface WorkerCall {
   text: string;
   ok: boolean;
   model: string | null;
   usage: PerModelUsage | null;
+  usages?: PerModelUsage[];
   elapsedMs: number;
-}
-
-/** Map an OpenAI-compatible `usage` block to a per-model rollup. The cached
- * tokens are a subset of `prompt_tokens`, so they're SUBTRACTED from `in` and
- * reported as `cacheRead` — pricing the cached portion at the cache rate keeps
- * the prompt-cache saving visible instead of billing it at the full input rate.
- * Returns null when the worker reported no usable usage. */
-function usageFromResponse(model: string, usage: WorkerUsage | undefined): PerModelUsage | null {
-  if (!usage || (usage.prompt_tokens == null && usage.completion_tokens == null)) return null;
-  const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0;
-  const promptTokens = usage.prompt_tokens ?? 0;
-  const nonCachedInput = Math.max(0, promptTokens - cached);
-  return roundUsage(model, nonCachedInput, usage.completion_tokens ?? 0, cached, 0);
 }
 
 /**
@@ -95,10 +84,12 @@ export async function delegateDetailed(
     system?: string;
     model?: string;
     governed?: boolean;
+    verify?: boolean;
   },
   provision: (prose: string) => Promise<string> = (prose) =>
     provisionFrame({ prose, autoTag: true }),
-  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel
+  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel,
+  makeReviewer: (artefact?: string) => Promise<Reviewer | null> = reasoningReviewer
 ): Promise<WorkerCall> {
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
@@ -136,65 +127,197 @@ export async function delegateDetailed(
   // and the worker gets full bodies, not a pick-list it would ignore (STDIO-348).
   const frame = input.governed !== false ? await provision(input.prompt) : null;
   const system = [frame, input.system?.trim()].filter(Boolean).join('\n\n') || undefined;
-
-  const messages = [
-    ...(system ? [{ role: 'system', content: system }] : []),
-    { role: 'user', content: input.prompt },
-  ];
   const url = `${baseUrl}/chat/completions`;
 
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify({ model, messages }),
-    });
-  } catch (err) {
+  // One worker round. The user content varies per call (a verify re-produce
+  // folds the review findings into it); everything else — system, model,
+  // endpoint — is fixed. Never throws: every failure path is a legible
+  // `ok: false` message.
+  const callWorker = async (userContent: string): Promise<WorkerCall> => {
+    const messages = [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      { role: 'user', content: userContent },
+    ];
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({ model, messages }),
+      });
+    } catch (err) {
+      return {
+        text:
+          `Could not reach the worker at ${url} (${String(err).slice(0, 120)}). ` +
+          "Is the local model server running (e.g. 'ollama serve'), or is AIGENCY_WORKER_URL correct?",
+        ok: false,
+        model,
+        usage: null,
+        elapsedMs: elapsed(),
+      };
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return {
+        text: `Worker returned HTTP ${res.status} from ${url} (model=${model}): ${body.slice(0, 200)}`,
+        ok: false,
+        model,
+        usage: null,
+        elapsedMs: elapsed(),
+      };
+    }
+    const json = (await res.json().catch(() => null)) as {
+      choices?: { message?: { content?: string } }[];
+      usage?: import('../openai-compat.js').WorkerUsage;
+    } | null;
+    const content = json?.choices?.[0]?.message?.content;
+    if (!content) {
+      return {
+        text: `Worker at ${url} returned no message content (model=${model}).`,
+        ok: false,
+        model,
+        usage: null,
+        elapsedMs: elapsed(),
+      };
+    }
     return {
-      text:
-        `Could not reach the worker at ${url} (${String(err).slice(0, 120)}). ` +
-        "Is the local model server running (e.g. 'ollama serve'), or is AIGENCY_WORKER_URL correct?",
-      ok: false,
+      text: content,
+      ok: true,
       model,
-      usage: null,
+      usage: usageFromResponse(model, json?.usage),
       elapsedMs: elapsed(),
     };
-  }
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    return {
-      text: `Worker returned HTTP ${res.status} from ${url} (model=${model}): ${body.slice(0, 200)}`,
-      ok: false,
-      model,
-      usage: null,
-      elapsedMs: elapsed(),
-    };
-  }
-  const json = (await res.json().catch(() => null)) as {
-    choices?: { message?: { content?: string } }[];
-    usage?: WorkerUsage;
-  } | null;
-  const content = json?.choices?.[0]?.message?.content;
-  if (!content) {
-    return {
-      text: `Worker at ${url} returned no message content (model=${model}).`,
-      ok: false,
-      model,
-      usage: null,
-      elapsedMs: elapsed(),
-    };
-  }
-  return {
-    text: content,
-    ok: true,
-    model,
-    usage: usageFromResponse(model, json?.usage),
-    elapsedMs: elapsed(),
   };
+
+  if (!input.verify) return callWorker(input.prompt);
+  return runReviewed(input.prompt, model, callWorker, makeReviewer, elapsed);
+}
+
+/** The directive for a verify re-produce: the original prompt plus the review's
+ * blocking findings, so the worker re-reads its own output and fixes what failed. */
+function withReviewFindings(prompt: string, findings: VerifyFinding[]): string {
+  return `${prompt}\n\n--- your previous output was rejected in an antagonistic review ---\nFix these blocking defects and return the corrected work IN FULL — the task is not done until the review passes:\n\n${formatFindings(findings)}`;
+}
+
+/**
+ * The verify path for delegate: produce → antagonistic review → re-produce on
+ * the findings, to a cap (the shared `runWithVerify`). The review runs on the
+ * reasoning tier, NOT the worker it judges. Preserves delegate's never-throw
+ * contract: an unreachable worker, an unconfigured reviewer, and a reviewer that
+ * errors mid-run each degrade to a legible note rather than an exception. The
+ * worker AND reviewer usage are carried in `usages` for the meter.
+ */
+/** Thrown from the verify loop's producer when a RE-PRODUCE worker call fails,
+ * so the loop stops rather than feeding a worker-error string to the reviewer
+ * (which could "approve" it and return the error stamped as passed work). */
+class ReproduceFailed extends Error {
+  constructor(readonly call: WorkerCall) {
+    super(call.text);
+  }
+}
+
+async function runReviewed(
+  prompt: string,
+  model: string,
+  callWorker: (userContent: string) => Promise<WorkerCall>,
+  makeReviewer: (artefact?: string) => Promise<Reviewer | null>,
+  elapsed: () => number
+): Promise<WorkerCall> {
+  const first = await callWorker(prompt);
+  // An unreachable / erroring worker isn't a review failure — return it as-is.
+  if (!first.ok) return first;
+
+  // Seed the meter with the first (successful) worker call; re-produce attempts
+  // and the reviewer add to it. `usage` is the summed worker-only rollup;
+  // `usages` spans the worker AND the reviewer (a different model).
+  const workerUsages: PerModelUsage[] = first.usage ? [first.usage] : [];
+  const workerTotal = () => (workerUsages.length ? sumUsages(workerUsages) : null);
+  const unreviewed = (reviewer: Reviewer | null, note: string): WorkerCall => ({
+    ...first,
+    usage: workerTotal(),
+    usages: [...workerUsages, ...(reviewer?.usage() ?? [])],
+    elapsedMs: elapsed(),
+    text: `${first.text}\n\n— note: ${note}`,
+  });
+
+  // Resolving the reviewer must not break delegate's never-throw contract — a
+  // construction failure degrades to a legible note, same as a missing tier.
+  let reviewer: Reviewer | null;
+  try {
+    reviewer = await makeReviewer('work');
+  } catch (err) {
+    return unreviewed(
+      null,
+      `verify could not run (${String(err).slice(0, 120)}); returning unreviewed.`
+    );
+  }
+  if (!reviewer) {
+    return unreviewed(
+      null,
+      'verify was requested but no reasoning-tier model is configured (set AIGENCY_MODEL_REASONING); returning unreviewed.'
+    );
+  }
+
+  let firstConsumed = false;
+  let lastFindings: VerifyFinding[] = [];
+  try {
+    const outcome = await runWithVerify({
+      capability: 'delegate',
+      verify: 'adversarial-review',
+      produce: async ({ findings, attempt }) => {
+        lastFindings = findings;
+        // Reuse the call already made for attempt 1; later attempts re-produce
+        // with the review findings folded in.
+        if (attempt === 1 && !firstConsumed) {
+          firstConsumed = true;
+          return first.text;
+        }
+        const call = await callWorker(withReviewFindings(prompt, findings));
+        // A worker that dies mid-fix must not have its error string reviewed (and
+        // possibly approved) — stop and surface the last good result instead.
+        if (!call.ok) throw new ReproduceFailed(call);
+        if (call.usage) workerUsages.push(call.usage);
+        return call.text;
+      },
+      verifier: reviewer.verifier,
+    });
+    const verdict = outcome.converged
+      ? `approved after ${outcome.attempts} attempt(s)`
+      : `NOT approved after ${outcome.attempts} attempt(s):\n${formatFindings(outcome.findings)}`;
+    return {
+      text: `${outcome.result}\n\n— reviewed on ${reviewer.model} (reasoning): ${verdict}`,
+      ok: true,
+      model,
+      usage: workerTotal(),
+      usages: [...workerUsages, ...reviewer.usage()],
+      elapsedMs: elapsed(),
+    };
+  } catch (err) {
+    if (err instanceof ReproduceFailed) {
+      // The worker couldn't be re-run to fix the review's findings. Return the
+      // first (good) attempt with the outstanding findings — NEVER the worker
+      // error stamped as approved.
+      const outstanding = lastFindings.length ? `\n${formatFindings(lastFindings)}` : '';
+      return {
+        text: `${first.text}\n\n— note: the review requested changes but the worker could not be re-run to apply them (${String(err.call.text).slice(0, 120)}); returning the first attempt with the outstanding findings:${outstanding}`,
+        ok: true,
+        model,
+        usage: workerTotal(),
+        usages: [...workerUsages, ...reviewer.usage()],
+        elapsedMs: elapsed(),
+      };
+    }
+    // The reviewer call itself failed (transport / provider). Don't crash
+    // delegate — return the worker's output unreviewed, KEEPING the reviewer's
+    // already-incurred usage on the meter.
+    return unreviewed(
+      reviewer,
+      `verify could not run (${String(err).slice(0, 120)}); returning unreviewed.`
+    );
+  }
 }
 
 /** Run a prompt on the configured worker model via its OpenAI-compatible
@@ -207,15 +330,20 @@ export async function delegate(
     system?: string;
     model?: string;
     governed?: boolean;
+    verify?: boolean;
     meter?: MeterMode;
   },
   provision: (prose: string) => Promise<string> = (prose) =>
     provisionFrame({ prose, autoTag: true }),
-  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel
+  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel,
+  makeReviewer: (artefact?: string) => Promise<Reviewer | null> = reasoningReviewer
 ): Promise<string> {
-  const r = await delegateDetailed(input, provision, tier);
+  const r = await delegateDetailed(input, provision, tier, makeReviewer);
   if (!r.ok) return r.text;
-  return r.text + (await delegateMeterFooter(r.usage, r.elapsedMs, resolveMeterMode(input.meter)));
+  // On the verify path `usages` spans the worker attempts AND the reviewer (a
+  // different model); else it's the single worker call.
+  const rounds = r.usages ?? (r.usage ? [r.usage] : []);
+  return r.text + (await delegateMeterFooter(rounds, r.elapsedMs, resolveMeterMode(input.meter)));
 }
 
 /** The metering footer for a delegate call — a single worker round (STDIO-388),
@@ -225,16 +353,16 @@ export async function delegate(
  * us". Warms the provider registry so the model can be priced from the catalog
  * (idempotent — only the first metered call pays). */
 async function delegateMeterFooter(
-  usage: PerModelUsage | null,
+  rounds: PerModelUsage[],
   elapsedMs: number,
   mode: MeterMode
 ): Promise<string> {
   if (mode === 'none') return '';
-  if (!usage) {
-    return '\n\n— metering: the worker reported no token usage —';
+  if (rounds.length === 0) {
+    return '\n\n— metering: no token usage was reported —';
   }
   await warmRegistry();
-  return meterFooter([usage], mode, { timing: { totalMs: elapsedMs } });
+  return meterFooter(rounds, mode, { timing: { totalMs: elapsedMs } });
 }
 
 /** A host-aware one-liner for the `delegate` description: whether a worker is
@@ -329,7 +457,7 @@ export async function registerDelegateTool(server: McpServer): Promise<void> {
     'delegate',
     {
       description:
-        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. To run a task on a SPECIFIC model (e.g. the user says \"use deepseek to review this\"), pass `model` set to one of the worker's served models named in this description. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Append token + cost metering with `meter` (or set it once via the AIGENCY_METER env). Returns the worker's text, or a short notice if no worker is configured for this project. " +
+        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. To run a task on a SPECIFIC model (e.g. the user says \"use deepseek to review this\"), pass `model` set to one of the worker's served models named in this description. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Set `verify: true` to put the worker's output through an antagonistic review on the reasoning tier (looping the worker on the review's findings) before it is returned. Append token + cost metering with `meter` (or set it once via the AIGENCY_METER env). Returns the worker's text, or a short notice if no worker is configured for this project. " +
         summary,
       inputSchema: {
         prompt: z
@@ -350,6 +478,12 @@ export async function registerDelegateTool(server: McpServer): Promise<void> {
           .describe(
             'Default true: the worker is given the practices and capabilities its work is held to, provisioned from its own prompt. Set false only for throwaway work that needs no bar.'
           ),
+        verify: z
+          .boolean()
+          .optional()
+          .describe(
+            "Default false. When true, the worker's output is put through an antagonistic review on the reasoning tier (a capable model, not the worker) before it is returned; the worker is looped on the review's blocking findings until it passes or a small attempt cap is hit. The returned text carries the review verdict. Use for work that must clear a quality bar, not throwaway."
+          ),
         meter: z
           .enum(['none', 'totals-only', 'verbose'])
           .optional()
@@ -358,11 +492,11 @@ export async function registerDelegateTool(server: McpServer): Promise<void> {
           ),
       },
     },
-    async ({ prompt, system, model, governed, meter }) => ({
+    async ({ prompt, system, model, governed, verify, meter }) => ({
       content: [
         {
           type: 'text' as const,
-          text: await delegate({ prompt, system, model, governed, meter }),
+          text: await delegate({ prompt, system, model, governed, verify, meter }),
         },
       ],
     })
