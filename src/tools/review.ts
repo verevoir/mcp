@@ -25,6 +25,10 @@ import { usageFromResponse, type WorkerUsage } from '../openai-compat.js';
 export interface Reviewer {
   verifier: Verifier;
   model: string;
+  /** The reviewer's provider (e.g. `samba`, `anthropic`) — so a caller can
+   * disclose the egress of sending the reviewed text to it. Optional: a test
+   * fake may omit it. */
+  provider?: string;
   usage(): PerModelUsage[];
 }
 
@@ -105,6 +109,7 @@ export async function reasoningReviewer(
       artefact,
     }),
     model: conn.modelId,
+    provider: conn.provider,
     usage: () => usages,
   };
 }
