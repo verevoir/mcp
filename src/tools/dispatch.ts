@@ -9,7 +9,10 @@ import {
   type ToolExecutor,
   type ChatWithToolLoopResult,
   type TokenUsage,
+  type PerModelUsage,
 } from '@verevoir/llm';
+import { runWithVerify, formatFindings, type VerifyFinding } from '@verevoir/recipes/engine';
+import { reasoningReviewer, type Reviewer } from './review.js';
 import { meterFooter, resolveMeterMode, roundUsage, type MeterMode } from '../metering.js';
 import { importProviderAdapter, warmRegistry } from '../registry.js';
 import { grepSource, warmSource, wrapWithCache } from '@verevoir/context';
@@ -258,6 +261,9 @@ export interface DispatchDeps {
    * run is observable. Defaults to a stderr log; the tool handler also pushes
    * an MCP progress notification to the host. */
   onProgress?: (message: string) => void;
+  /** Build the reasoning-tier antagonist reviewer for the `verify` path.
+   * Defaults to `reasoningReviewer`; injected for tests. */
+  makeReviewer?: (artefact?: string) => Promise<Reviewer | null>;
 }
 
 /** Run a frontier model as an agent over the source. Returns its final text
@@ -270,6 +276,7 @@ export async function dispatchTask(
     source: string;
     maxIterations?: number;
     meter?: MeterMode;
+    verify?: boolean;
   },
   deps: DispatchDeps = {}
 ): Promise<string> {
@@ -279,6 +286,7 @@ export async function dispatchTask(
     deps.loadAdapter ?? ((p: string) => importProviderAdapter(p) as Promise<ToolLoopAdapter>);
   const makeExec = deps.executorFor ?? makeDispatchExecutor;
   const progress = deps.onProgress ?? ((m: string) => console.error(`[dispatch] ${m}`));
+  const makeReviewer = deps.makeReviewer ?? reasoningReviewer;
 
   await warm();
   const entry = resolve(input.model);
@@ -290,53 +298,211 @@ export async function dispatchTask(
     return `Provider "${entry.provider}" can't be driven as an agent (no tool loop).`;
   }
 
-  const usages: ReturnType<typeof roundUsage>[] = [];
-  const stages: string[] = [];
   const maxIterations = input.maxIterations ?? 12;
-  const startedAt = Date.now();
-  const result = await adapter.chatWithToolLoop({
-    systemPrompt: systemPrompt(input.source, maxIterations),
-    turns: [{ role: 'user', content: input.prompt }],
-    modelClass: entry.modelClass ?? 'reasoning',
-    tools: DISPATCH_TOOLS,
-    executor: makeExec(input.source),
-    maxIterations,
-    onUsage: async (u) => {
-      // Carry cache tokens through so the meter prices a cache hit at the cache
-      // rate (the saving stays visible) rather than at the full input rate.
-      usages.push(
-        roundUsage(
-          u.model,
-          u.inputTokens,
-          u.outputTokens,
-          u.cacheReadInputTokens,
-          u.cacheCreationInputTokens
-        )
-      );
-    },
-    onIteration: async (info) => {
-      const names = info.toolUses.map((u) => u.name).join(', ') || '(thinking)';
-      stages.push(names);
-      progress(`round ${info.iteration}: ${names}`);
-    },
-  });
-  const totalMs = Date.now() - startedAt;
 
-  const drove = result.toolUses.map((u) => u.name);
+  // One agentic run over the source. The user content varies per call (a verify
+  // re-run folds the review findings in); the toolbelt, model, and source-aware
+  // prompt are fixed. Collects this run's per-round usage + stage labels.
+  const runAgent = async (userContent: string): Promise<AgentRun> => {
+    const usages: PerModelUsage[] = [];
+    const stages: string[] = [];
+    const startedAt = Date.now();
+    const result = await adapter.chatWithToolLoop({
+      systemPrompt: systemPrompt(input.source, maxIterations),
+      turns: [{ role: 'user', content: userContent }],
+      modelClass: entry.modelClass ?? 'reasoning',
+      tools: DISPATCH_TOOLS,
+      executor: makeExec(input.source),
+      maxIterations,
+      onUsage: async (u) => {
+        // Carry cache tokens through so the meter prices a cache hit at the cache
+        // rate (the saving stays visible) rather than at the full input rate.
+        usages.push(
+          roundUsage(
+            u.model,
+            u.inputTokens,
+            u.outputTokens,
+            u.cacheReadInputTokens,
+            u.cacheCreationInputTokens
+          )
+        );
+      },
+      onIteration: async (info) => {
+        const names = info.toolUses.map((u) => u.name).join(', ') || '(thinking)';
+        stages.push(names);
+        progress(`round ${info.iteration}: ${names}`);
+      },
+    });
+    return { result, usages, stages, ms: Date.now() - startedAt };
+  };
+
+  if (!input.verify) {
+    const r = await runAgent(input.prompt);
+    return formatDispatch({
+      result: r.result,
+      usages: r.usages,
+      stages: r.stages,
+      totalMs: r.ms,
+      provider: entry.provider,
+      meter: input.meter,
+    });
+  }
+  return runDispatchReviewed(input, entry.provider, runAgent, makeReviewer);
+}
+
+/** One agentic run: the worker's result plus the per-round usage + stage labels
+ * it produced and its wall-clock. */
+interface AgentRun {
+  result: ChatWithToolLoopResult;
+  usages: PerModelUsage[];
+  stages: string[];
+  ms: number;
+}
+
+/** Thrown from the verify loop's producer when an AGENT RUN fails, so the loop's
+ * error handling can tell an agent failure (which propagates, as dispatch does
+ * today) from a reviewer failure (which degrades to a note). */
+class AgentRunFailed extends Error {
+  constructor(readonly cause: unknown) {
+    super(String(cause));
+  }
+}
+
+/** The directive for a verify re-run: the original task plus the review's
+ * blocking findings, so the agent re-reads/fixes the work it produced. */
+function withDispatchFindings(prompt: string, findings: VerifyFinding[]): string {
+  return `${prompt}\n\n--- your previous work was rejected in an antagonistic review ---\nFix these blocking defects in the source and produce the corrected work — the task is not done until the review passes:\n\n${formatFindings(findings)}`;
+}
+
+/**
+ * The verify path for dispatch: run the agent, antagonistically review its output
+ * on the reasoning tier, and on a not-clean verdict re-run with the findings
+ * folded in, to a low cap (the shared `runWithVerify`; each attempt is a full
+ * agentic run, so the cap is small). An AGENT failure propagates as it does
+ * without verify; a REVIEWER failure (or an unconfigured reasoning tier) degrades
+ * to a legible note over the work, never a crash. Usage spans every agent run AND
+ * the reviewer (a different model).
+ *
+ * NB: this reviews the agent's final OUTPUT text, not a read-back of the files it
+ * wrote — reviewing the written artefacts is the stronger follow-on gate.
+ */
+async function runDispatchReviewed(
+  input: { prompt: string; source: string; meter?: MeterMode },
+  provider: string,
+  runAgent: (userContent: string) => Promise<AgentRun>,
+  makeReviewer: (artefact?: string) => Promise<Reviewer | null>
+): Promise<string> {
+  const usages: PerModelUsage[] = [];
+  const stages: string[] = [];
+  let totalMs = 0;
+  let last: ChatWithToolLoopResult | null = null;
+  const record = (r: AgentRun) => {
+    usages.push(...r.usages);
+    stages.push(...r.stages);
+    totalMs += r.ms;
+    last = r.result;
+  };
+  const render = (extra: string) =>
+    formatDispatch({ result: last, usages, stages, totalMs, provider, meter: input.meter, extra });
+
+  // Resolving the reviewer must not break the run — degrade to one unreviewed run.
+  let reviewer: Reviewer | null;
+  try {
+    reviewer = await makeReviewer('output');
+  } catch (err) {
+    record(await runAgent(input.prompt));
+    return render(
+      `\n\n— note: verify could not run (${String(err).slice(0, 120)}); returning unreviewed.`
+    );
+  }
+  if (!reviewer) {
+    record(await runAgent(input.prompt));
+    return render(
+      '\n\n— note: verify was requested but no reasoning-tier model is configured (set AIGENCY_MODEL_REASONING); returning unreviewed.'
+    );
+  }
+
+  // Disclose the SEPARATE egress of sending the reviewed text (which may carry
+  // source excerpts) to the reasoning-tier provider — independent of the dispatch
+  // worker's own egress line, and emitted even when that worker is Anthropic.
+  const reviewEgress =
+    reviewer.provider && reviewer.provider !== 'anthropic'
+      ? `\n\n— egress (review): the worker's output was sent to "${reviewer.provider}" (the reasoning tier) for antagonistic review, so any source excerpts it contained also went outside Anthropic.`
+      : '';
+  // Record the reviewer's cumulative usage once on a terminal path, with matching
+  // stage labels so the verbose meter stays aligned (rounds ↔ stageLabels are
+  // index-paired).
+  const recordReviewer = () => {
+    const rounds = reviewer!.usage();
+    usages.push(...rounds);
+    stages.push(...rounds.map(() => 'review'));
+  };
+
+  try {
+    const outcome = await runWithVerify({
+      capability: 'dispatch',
+      verify: 'adversarial-review',
+      maxAttempts: 2, // each attempt is a full agentic run — keep the cap small
+      produce: async ({ findings, attempt }) => {
+        const userContent =
+          attempt === 1 ? input.prompt : withDispatchFindings(input.prompt, findings);
+        let r: AgentRun;
+        try {
+          r = await runAgent(userContent);
+        } catch (err) {
+          throw new AgentRunFailed(err);
+        }
+        record(r);
+        return r.result.text;
+      },
+      verifier: reviewer.verifier,
+    });
+    recordReviewer();
+    const verdict = outcome.converged
+      ? `approved after ${outcome.attempts} run(s)`
+      : `NOT approved after ${outcome.attempts} run(s):\n${formatFindings(outcome.findings)}`;
+    return render(
+      `\n\n— reviewed on ${reviewer.model} (reasoning; judged the output text, not a read-back of the files written): ${verdict}${reviewEgress}`
+    );
+  } catch (err) {
+    // An agent failure propagates as dispatch does today; a reviewer failure
+    // degrades to a note over the work already produced.
+    if (err instanceof AgentRunFailed) throw err.cause;
+    recordReviewer();
+    return render(
+      `\n\n— note: verify could not run (${String(err).slice(0, 120)}); returning unreviewed.${reviewEgress}`
+    );
+  }
+}
+
+/** Assemble a dispatch result: the worker text, an optional `extra` line (the
+ * review verdict / note), the tool-call trace, the egress disclosure, and the
+ * meter footer. */
+function formatDispatch(opts: {
+  result: ChatWithToolLoopResult | null;
+  usages: PerModelUsage[];
+  stages: string[];
+  totalMs: number;
+  provider: string;
+  meter?: MeterMode;
+  extra?: string;
+}): string {
+  const text = opts.result?.text ?? '';
+  const drove = (opts.result?.toolUses ?? []).map((u) => u.name);
   const trace = drove.length ? `\n\n— drove ${drove.length} tool call(s): ${drove.join(', ')}` : '';
   // Egress disclosure (STDIO-397): a non-Anthropic worker means the source — which may be
   // private — was sent to a third-party provider to do the work. Surface that boundary on
   // every such run, so the caller can see where their code went rather than having to infer
   // it from the model name. Silence would hide the most security-relevant fact about the run.
   const egress =
-    entry.provider !== 'anthropic'
-      ? `\n\n— egress: this ran on "${entry.provider}", a third-party model provider, so the source content was sent outside Anthropic to it. Use an Anthropic-served worker to keep the source in-house.`
+    opts.provider !== 'anthropic'
+      ? `\n\n— egress: this ran on "${opts.provider}", a third-party model provider, so the source content was sent outside Anthropic to it. Use an Anthropic-served worker to keep the source in-house.`
       : '';
-  const footer = meterFooter(usages, resolveMeterMode(input.meter), {
-    stageLabels: stages,
-    timing: { totalMs },
+  const footer = meterFooter(opts.usages, resolveMeterMode(opts.meter), {
+    stageLabels: opts.stages,
+    timing: { totalMs: opts.totalMs },
   });
-  return `${result.text}${trace}${egress}${footer}`;
+  return `${text}${opts.extra ?? ''}${trace}${egress}${footer}`;
 }
 
 // ── Async / background dispatch (STDIO-384) ─────────────────────────────────
@@ -351,6 +517,7 @@ export type DispatchInput = {
   source: string;
   maxIterations?: number;
   meter?: MeterMode;
+  verify?: boolean;
 };
 
 export interface DispatchJob {
@@ -463,7 +630,7 @@ export function registerDispatchTool(server: McpServer): void {
     'dispatch',
     {
       description:
-        'Hand a whole task to a FRONTIER worker model (e.g. DeepSeek) and let it drive: it gets a toolbelt (read_file, grep, find_symbol, provision, and write_file/edit_file when the task calls for changes) and works autonomously over a source — exploring, pulling its own practices, reading real code, and producing or changing it. Runs can be slow (each round is a full worker call) and it emits progress as it goes — for a large task on a slow/hosted model that would exceed a synchronous tool-call timeout, use `dispatch_start` (background) + `dispatch_result` (poll) instead. Use this (not `delegate`) when you want the worker to do the agentic work itself rather than judge a pre-chewed prompt. `model` is a family or id (e.g. "deepseek"); `source` is the repo/path it works over.',
+        'Hand a whole task to a FRONTIER worker model (e.g. DeepSeek) and let it drive: it gets a toolbelt (read_file, grep, find_symbol, provision, and write_file/edit_file when the task calls for changes) and works autonomously over a source — exploring, pulling its own practices, reading real code, and producing or changing it. Runs can be slow (each round is a full worker call) and it emits progress as it goes — for a large task on a slow/hosted model that would exceed a synchronous tool-call timeout, use `dispatch_start` (background) + `dispatch_result` (poll) instead. Use this (not `delegate`) when you want the worker to do the agentic work itself rather than judge a pre-chewed prompt. Set `verify: true` to put the worker\'s output through an antagonistic review on the reasoning tier and re-run it on the findings before returning. `model` is a family or id (e.g. "deepseek"); `source` is the repo/path it works over.',
       inputSchema: {
         prompt: z.string().describe('The task for the worker — what to produce.'),
         model: z
@@ -475,6 +642,12 @@ export function registerDispatchTool(server: McpServer): void {
           .string()
           .describe('The source the worker reads from (local path, GitHub repo, or Notion url).'),
         maxIterations: z.number().optional().describe('Cap on tool-call rounds (default 12).'),
+        verify: z
+          .boolean()
+          .optional()
+          .describe(
+            "Default false. When true, the worker's output is put through an antagonistic review on the reasoning tier and the agent is re-run on the review's blocking findings (to a low cap) before the result is returned; the returned text carries the verdict. Reviews the final output text, not a read-back of the files written."
+          ),
         meter: z
           .enum(['none', 'totals-only', 'verbose'])
           .optional()
@@ -483,7 +656,7 @@ export function registerDispatchTool(server: McpServer): void {
           ),
       },
     },
-    async ({ prompt, model, source, maxIterations, meter }, extra) => {
+    async ({ prompt, model, source, maxIterations, verify, meter }, extra) => {
       // Surface live progress: stderr (server logs) + an MCP progress
       // notification to the host (best-effort — only when it passed a token).
       const meta = (extra as { _meta?: { progressToken?: string | number } } | undefined)?._meta;
@@ -508,7 +681,7 @@ export function registerDispatchTool(server: McpServer): void {
           {
             type: 'text' as const,
             text: await dispatchTask(
-              { prompt, model, source, maxIterations, meter },
+              { prompt, model, source, maxIterations, verify, meter },
               { onProgress }
             ),
           },
@@ -527,6 +700,12 @@ export function registerDispatchTool(server: McpServer): void {
         model: z.string().describe('The worker model, by family or id (e.g. "deepseek").'),
         source: z.string().describe('The source the worker reads from.'),
         maxIterations: z.number().optional().describe('Cap on tool-call rounds (default 12).'),
+        verify: z
+          .boolean()
+          .optional()
+          .describe(
+            "Default false. When true, the worker's output is put through an antagonistic review on the reasoning tier and the agent is re-run on the findings (to a low cap) before the result is returned (see `dispatch`). Reviews the final output text, not a read-back of the files written."
+          ),
         meter: z
           .enum(['none', 'totals-only', 'verbose'])
           .optional()
@@ -535,8 +714,8 @@ export function registerDispatchTool(server: McpServer): void {
           ),
       },
     },
-    async ({ prompt, model, source, maxIterations, meter }) => {
-      const job = startDispatch({ prompt, model, source, maxIterations, meter });
+    async ({ prompt, model, source, maxIterations, verify, meter }) => {
+      const job = startDispatch({ prompt, model, source, maxIterations, verify, meter });
       return {
         content: [
           {
