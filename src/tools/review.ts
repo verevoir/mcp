@@ -85,31 +85,52 @@ async function reasoningChat(
   return { content, usage: usageFromResponse(conn.modelId, json?.usage) };
 }
 
-/** Build the reasoning-tier antagonist reviewer, or null when no reasoning tier
- * is configured (AIGENCY_MODEL_REASONING unset / unresolvable) — the caller
- * surfaces that as a legible "returned unreviewed" note rather than silently
- * skipping the gate. `tier` is injectable for tests. */
-export async function reasoningReviewer(
-  artefact = 'work',
-  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel
-): Promise<Reviewer | null> {
-  const conn = await tier('reasoning');
-  if (!conn) return null;
+/** A reasoning-tier `ChatFn` bound to a resolved connection, plus the running
+ * tally of the token usage its calls cost — so a caller can meter the calls it
+ * drives through this chat (the reviewer, and the bin's concern-tagging). */
+export interface ReasoningChat {
+  chat: ChatFn;
+  usage(): PerModelUsage[];
+}
+
+/** Build an OpenAI-compatible reasoning `ChatFn` over a resolved connection,
+ * accumulating per-call usage. Shared by the reviewer and any other reasoning
+ * step (e.g. the local-review bin's concern-tag selection) so the model wiring
+ * lives in one place rather than being duplicated per caller. */
+export function reasoningChatFn(conn: ModelConnection): ReasoningChat {
   const usages: PerModelUsage[] = [];
   const chat: ChatFn = async (opts): Promise<ChatReply> => {
     const { content, usage } = await reasoningChat(conn, opts.systemPrompt, opts.turns);
     if (usage) usages.push(usage);
     return { content, usage: ZERO_REPLY_USAGE, stopReason: 'end_turn' };
   };
+  return { chat, usage: () => usages };
+}
+
+/** Build the reasoning-tier antagonist reviewer, or null when no reasoning tier
+ * is configured (AIGENCY_MODEL_REASONING unset / unresolvable) — the caller
+ * surfaces that as a legible "returned unreviewed" note rather than silently
+ * skipping the gate. `tier` is injectable for tests. `rubric`, when given, is
+ * the bar the work is held to (the provisioned practice frame); omitted, the
+ * reviewer applies general engineering judgement — the existing behaviour. */
+export async function reasoningReviewer(
+  artefact = 'work',
+  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel,
+  rubric?: string
+): Promise<Reviewer | null> {
+  const conn = await tier('reasoning');
+  if (!conn) return null;
+  const { chat, usage } = reasoningChatFn(conn);
   return {
     verifier: makeAdversarialReview({
       chat,
       apiKey: conn.apiKey,
       modelClass: 'reasoning',
       artefact,
+      rubric,
     }),
     model: conn.modelId,
     provider: conn.provider,
-    usage: () => usages,
+    usage,
   };
 }
