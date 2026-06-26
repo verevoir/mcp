@@ -199,19 +199,35 @@ The `trust` field (boolean, optional) suppresses per-tool confirmation prompts. 
 
 ## OpenAI Codex CLI
 
-> **Verify against [Codex CLI docs](https://github.com/openai/codex/blob/main/codex-cli/README.md):** a canonical MCP config example was not available in the public documentation at time of writing. The shape below follows the standard stdio MCP convention that Codex CLI is expected to support; confirm the exact key names and file path against the current docs before relying on it.
+**Config file:** `~/.codex/config.toml`. Each server is a `[mcp_servers.<name>]` table with `command` (string), `args` (array), optional `env` (inline table), and optional `cwd`.
 
-Expected config file: `~/.codex/config.toml` (or `config.json` — check the docs).
+**Quickest way — CLI:**
+
+```bash
+codex mcp add verevoir -- npx -y @verevoir/mcp
+```
+
+The `--` separates Codex's own flags from the server command. Add credentials with repeatable `--env KEY=VALUE`:
+
+```bash
+codex mcp add verevoir --env GITHUB_TOKEN=ghp_... --env NOTION_API_KEY=ntn_... -- npx -y @verevoir/mcp
+```
+
+Manage servers with `codex mcp list` / `codex mcp get <name>` / `codex mcp remove <name>`.
+
+**Or edit `~/.codex/config.toml` directly:**
 
 ```toml
 [mcp_servers.verevoir]
 command = "npx"
-args    = ["-y", "@verevoir/mcp"]
+args = ["-y", "@verevoir/mcp"]
 
 [mcp_servers.verevoir.env]
-GITHUB_TOKEN    = "ghp_..."
-NOTION_API_KEY  = "ntn_..."
+GITHUB_TOKEN = "ghp_..."
+NOTION_API_KEY = "ntn_..."
 ```
+
+**Env:** Codex passes the launching environment through, so shell-exported vars are inherited when Codex runs from a sourced terminal. If a stricter `shell_environment_policy` would filter them out, set them explicitly via `--env` / the `env` table, or override with `-c shell_environment_policy.inherit=all`.
 
 **Reload:** restart the Codex CLI session.
 
