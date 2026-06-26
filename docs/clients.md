@@ -116,9 +116,9 @@ Add `--scope user` to write to `~/.claude.json`; the default writes to the curre
 
 ## Warp
 
-**Config file:** `~/.warp/.mcp.json` (global) or `.warp/.mcp.json` at the project root (project-scoped).
+Warp has **no editable MCP config file** — servers are added through the UI only, and stored in Warp's internal app config.
 
-**UI path:** Settings → Agents → MCP servers → `+ Add` → CLI Server.
+**UI path:** Settings → Agents → MCP servers → `+ Add` → CLI Server → paste the JSON below → Save.
 
 ```json
 {
@@ -135,7 +135,9 @@ Add `--scope user` to write to `~/.claude.json`; the default writes to the curre
 }
 ```
 
-**Reload:** click Start next to the server in Settings → Agents → MCP servers. Global servers auto-spawn by default; project-scoped ones may require enabling the `Auto-spawn servers from third-party agents` toggle.
+**Env must be inline.** Warp is a GUI app — launched from Finder / the Dock, not your shell — so it does **not** inherit shell-exported environment variables (`export GITHUB_TOKEN=…` in your `.zshrc` is invisible to it). Unlike the terminal CLI clients below, which inherit your shell environment, Warp's MCP entry must carry every credential **inline** in its `env` block (the form above). A bare `npx -y @verevoir/mcp` with no `env` gives you a keyless server that fails at the first tool call. The alternative is to export the vars to the GUI session itself with `launchctl setenv NAME value` (or a LaunchAgent) before launching Warp.
+
+**Reload:** click Start next to the server in Settings → Agents → MCP servers.
 
 **Recommended:** disable `Autodetect agent prompts` and `Active AI` under Warp Agent settings to keep verevoir operating as a passive tool surface rather than an always-on assistant.
 
