@@ -54,7 +54,7 @@ Restart Claude Code (or `claude --resume`). Tools become ambient.
 
 Env vars are read per-tool. Tools work without their unrelated creds; missing-env errors surface at call time with the missing variable named.
 
-The server composes an operating doctrine into the model's context on connect. If it finds a project pointer manifest — `aigency.json` in its working directory, or `--manifest <path>` in `args` (ADR 023) — it appends a project-specific section naming this project's board / record / ADRs as Notion URLs. No manifest → no-project mode: universal doctrine only, server still starts.
+The server composes an operating doctrine into the model's context on connect. If it finds a project pointer manifest, it appends a project-specific section naming this project's board / record / ADRs as Notion URLs. **Recommended setup:** add a fenced block with info-string `verevoir-mcp` to the project's `AGENTS.md` — the block body is parsed as the manifest JSON (example: `{ "notion": { "workspaceRootPageId": "…", "databases": { "work_tracker": "…", "adrs": "…" } }, "governance": [ { "source": "../guardrails", "paths": ["corpus/practices"] } ] }`). This keeps the pointer in the same file the `agent-context-file-maintained` practice already requires, with no separate manifest file to drift. Resolution precedence: `--manifest <path>` (explicit flag, accepts JSON or Markdown with the block) → `AGENTS.md` block in the working dir → `verevoir-mcp.json` → `aigency.json` → no-project mode (server still starts, universal doctrine only). A malformed candidate at any step degrades gracefully to the next; only a `--manifest` flag with no value throws.
 
 ## Tools
 

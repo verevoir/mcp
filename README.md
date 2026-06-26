@@ -86,17 +86,45 @@ Add to `~/.claude/mcp.json`:
 
 Restart Claude Code (the MCP server loads at session start; `claude --resume` works too — it spawns a new process which re-reads `mcp.json`).
 
-#### Pointing the server at a project (`aigency.json`)
+#### Pointing the server at a project
 
-The server injects an operating doctrine into the model's context on connect. When it can find a project **pointer manifest** (`aigency.json`, per ADR 023), it appends a project-specific section naming _this_ project's work tracker, project record, and ADR database as concrete Notion URLs.
+The server injects an operating doctrine into the model's context on connect. When it finds a project pointer manifest, it appends a project-specific section naming _this_ project's work tracker, project record, and ADR database as concrete Notion URLs.
 
-Discovery (per ADR 023): the server reads `aigency.json` from its **working directory**, overridable with a `--manifest <path>` arg. Add it after the script path:
+**Add a `verevoir-mcp` block to your project's `AGENTS.md`.** This is the recommended (and only documented) way to point the server at a project. `AGENTS.md` is already the per-repo agent context file the `agent-context-file-maintained` practice requires — putting the manifest there keeps the pointer with the rest of the project context, with no separate file to drift.
 
-```json
-"args": ["/absolute/path/to/mcp/dist/bin.js", "--manifest", "/absolute/path/to/project/aigency.json"]
+The server reads `AGENTS.md` from its working directory at startup. Add a fenced code block whose info-string is `verevoir-mcp` anywhere in the file; the block body is parsed as the manifest JSON:
+
+````markdown
+## Project context
+
+This repo is part of the acme project. Work tracker, decisions, and project
+record are in Notion — the verevoir MCP reads from there.
+
+```verevoir-mcp
+{
+  "notion": {
+    "workspaceRootPageId": "11112222-3333-4444-5555-666677778888",
+    "databases": {
+      "work_tracker": "aaaa1111-2222-3333-4444-555566667777",
+      "adrs":         "bbbb1111-2222-3333-4444-555566667777"
+    }
+  },
+  "governance": [
+    { "source": "../guardrails", "paths": ["corpus/practices"] }
+  ]
+}
 ```
+````
 
-Without a manifest the server runs in **no-project mode** — it still starts and serves the universal doctrine; only the project-specific section is omitted.
+**Resolution precedence.** The server tries each source in order; the first that yields a valid manifest wins:
+
+1. `--manifest <path>` — explicit flag, always wins. Accepts a JSON file or a Markdown file containing the `verevoir-mcp` block. Supply it after the script path: `"args": ["/path/to/mcp/dist/bin.js", "--manifest", "/path/to/project/AGENTS.md"]`. Throws on a missing/bad flag value — a botched arg fails loudly rather than silently dropping to no-project mode.
+2. `AGENTS.md` in the working directory — if it contains a `verevoir-mcp` fenced block with valid JSON (the recommended path above).
+3. `verevoir-mcp.json` in the working directory — accepted fallback; no dedicated setup example here.
+4. `aigency.json` in the working directory — legacy fallback; accepted long-term but not the recommended approach.
+5. None found → **no-project mode**: the server still starts and serves the universal doctrine; only the project-specific section is omitted.
+
+A present-but-malformed source at any step (bad JSON, missing block) is skipped gracefully and resolution continues to the next candidate.
 
 #### Why `"alwaysLoad": true`
 
