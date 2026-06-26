@@ -133,18 +133,13 @@ function tryJsonFile(cwd: string, filename: string): ManifestResolution | null {
  * - A present-but-malformed explicit manifest (bad JSON, missing block) throws,
  *   not degrades — the operator explicitly named a file; they expect it to work.
  */
-function resolveExplicitManifest(
-  argv: string[],
-  cwd: string
-): ManifestResolution | null {
+function resolveExplicitManifest(argv: string[], cwd: string): ManifestResolution | null {
   const i = argv.indexOf('--manifest');
   if (i === -1) return null;
 
   const value = argv[i + 1];
   if (value === undefined || value.startsWith('-')) {
-    throw new Error(
-      '--manifest requires a path argument (e.g. --manifest /path/to/aigency.json)'
-    );
+    throw new Error('--manifest requires a path argument (e.g. --manifest /path/to/aigency.json)');
   }
 
   const path = resolve(cwd, value);

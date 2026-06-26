@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import {
   manifestPath,
   loadManifest,
@@ -13,7 +13,6 @@ import {
 
 const FIXTURES_DIR = fileURLToPath(new URL('./fixtures', import.meta.url));
 const FIXTURE_AIGENCY = join(FIXTURES_DIR, 'aigency.json');
-const FIXTURE_VEREVOIR_MCP = join(FIXTURES_DIR, 'verevoir-mcp.json');
 const FIXTURE_AGENTS_MD = join(FIXTURES_DIR, 'AGENTS.md');
 const FIXTURE_AGENTS_MD_NO_BLOCK = join(FIXTURES_DIR, 'AGENTS-no-block.md');
 const FIXTURE_AGENTS_MD_BAD_JSON = join(FIXTURES_DIR, 'AGENTS-bad-json.md');
@@ -111,10 +110,7 @@ describe('resolveManifest precedence', () => {
   it('explicit --manifest beats AGENTS.md, verevoir-mcp.json, and aigency.json', () => {
     // Point --manifest directly at the aigency.json fixture (within a dir
     // that also has AGENTS.md and verevoir-mcp.json if they existed).
-    const res = resolveManifest(
-      ['node', 'bin.js', '--manifest', FIXTURE_AIGENCY],
-      FIXTURES_DIR
-    );
+    const res = resolveManifest(['node', 'bin.js', '--manifest', FIXTURE_AIGENCY], FIXTURES_DIR);
     expect(res?.sourcePath).toBe(FIXTURE_AIGENCY);
     expect(res?.manifest?.notion?.databases?.['work_tracker']).toBe(
       'aaaa1111-2222-3333-4444-555566667777'
@@ -305,10 +301,7 @@ describe('composeInstructions', () => {
 // ---------------------------------------------------------------------------
 describe('resolveManifest --manifest with .md path', () => {
   it('parses the verevoir-mcp block from an AGENTS.md path supplied via --manifest', () => {
-    const res = resolveManifest(
-      ['node', 'bin.js', '--manifest', FIXTURE_AGENTS_MD],
-      FIXTURES_DIR
-    );
+    const res = resolveManifest(['node', 'bin.js', '--manifest', FIXTURE_AGENTS_MD], FIXTURES_DIR);
     expect(res?.sourcePath).toBe(FIXTURE_AGENTS_MD);
     expect(res?.manifest?.notion?.databases?.['work_tracker']).toBe('explicit-agents-tracker-id');
   });
