@@ -211,6 +211,39 @@ describe('loadManifest', () => {
     const nonJson = join(FIXTURES_DIR, 'non-json-dir');
     expect(loadManifest(['node', 'bin.js'], nonJson)).toBeNull();
   });
+
+  // A botched explicit --manifest must fail loud at startup, never degrade to
+  // no-project mode (STDIO-135). Only discovery failures degrade to null.
+  it('throws (does not return null) when --manifest has no following value', () => {
+    expect(() => loadManifest(['node', 'bin.js', '--manifest'], EMPTY_DIR)).toThrow(
+      '--manifest requires a path'
+    );
+  });
+
+  it('throws when --manifest is followed by another flag', () => {
+    expect(() => loadManifest(['node', 'bin.js', '--manifest', '--verbose'], EMPTY_DIR)).toThrow(
+      '--manifest requires a path'
+    );
+  });
+
+  it('throws when --manifest points at a missing file', () => {
+    expect(() =>
+      loadManifest(['node', 'bin.js', '--manifest', join(EMPTY_DIR, 'nope.json')], EMPTY_DIR)
+    ).toThrow();
+  });
+
+  it('throws when --manifest points at an invalid-JSON file', () => {
+    const broken = join(FIXTURES_DIR, 'non-json-dir', 'aigency.json');
+    expect(() => loadManifest(['node', 'bin.js', '--manifest', broken], EMPTY_DIR)).toThrow(
+      'not a valid JSON object'
+    );
+  });
+
+  it('throws when --manifest points at an .md with no verevoir-mcp block', () => {
+    expect(() =>
+      loadManifest(['node', 'bin.js', '--manifest', FIXTURE_AGENTS_MD_NO_BLOCK], EMPTY_DIR)
+    ).toThrow('no verevoir-mcp fenced block');
+  });
 });
 
 // ---------------------------------------------------------------------------

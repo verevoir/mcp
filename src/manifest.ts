@@ -189,10 +189,22 @@ export function resolveManifest(
   argv: string[] = process.argv,
   cwd: string = process.cwd()
 ): ManifestResolution | null {
-  // 1 — explicit --manifest flag (throws on bad arg)
+  // 1 — explicit --manifest flag (throws on a bad arg or a broken named file —
+  // a botched launch arg fails loud, never degrades to no-project mode).
   const explicit = resolveExplicitManifest(argv, cwd);
   if (explicit) return explicit;
 
+  // 2–4 — discovery: each candidate degrades to the next, never throws.
+  return resolveDiscoveredManifest(cwd);
+}
+
+/** The discovery half of resolution (candidates 2–4): AGENTS.md block →
+ * verevoir-mcp.json → aigency.json. Every step degrades gracefully — a missing
+ * file, a missing block, or invalid JSON falls through to the next candidate,
+ * and an exhausted chain returns `null` (no-project mode). Never throws, so a
+ * caller can treat a null here as a genuine "no project configured" rather than
+ * a failure to distinguish from a botched explicit `--manifest`. */
+function resolveDiscoveredManifest(cwd: string): ManifestResolution | null {
   // 2 — AGENTS.md embedded block
   const agentsMd = tryAgentsMd(cwd);
   if (agentsMd) return agentsMd;
@@ -233,24 +245,27 @@ export function manifestPath(argv: string[] = process.argv, cwd: string = proces
   return res?.sourcePath ?? resolve(cwd, 'aigency.json');
 }
 
-/** Load the project manifest. Returns `null` in "no-project mode" — no
- * candidate file is present / readable / valid — so the server still starts
- * with only the universal doctrine. Uses the full precedence resolution:
+/** Load the project manifest, using the full precedence resolution:
  * --manifest > AGENTS.md block > verevoir-mcp.json > aigency.json.
- * `argv` / `cwd` are injectable for testing. */
+ *
+ * Returns `null` in "no-project mode" when **discovery** finds nothing — no
+ * AGENTS.md block, no `verevoir-mcp.json`, no `aigency.json` — so the server
+ * still starts with only the universal doctrine.
+ *
+ * A botched explicit `--manifest` (no value, a value that is another flag, or a
+ * named file that is missing / unparseable) **throws** rather than degrading to
+ * null (STDIO-135): an operator who explicitly names a manifest expects it to
+ * load, so the failure must be loud at startup, never a silent no-project mode.
+ * Only discovery failures are swallowed. `argv` / `cwd` are injectable for
+ * testing. */
 export function loadManifest(
   argv: string[] = process.argv,
   cwd: string = process.cwd()
 ): AigencyManifest | null {
-  try {
-    return resolveManifest(argv, cwd)?.manifest ?? null;
-  } catch {
-    // Explicit --manifest with a bad arg / missing file: the server should not
-    // silently fall back — but loadManifest's contract is null on failure.
-    // The explicit-manifest error will also surface via manifestPath at startup;
-    // for safety we propagate it here too (caught by the caller in no-project mode).
-    return null;
-  }
+  // resolveManifest throws only for an explicit --manifest error; discovery
+  // returns null rather than throwing. So letting it propagate gives exactly
+  // the contract we want — loud on a bad --manifest, null on empty discovery.
+  return resolveManifest(argv, cwd)?.manifest ?? null;
 }
 
 /** Notion page/database id → workspace URL the verevoir Notion tools accept. */
