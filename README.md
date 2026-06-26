@@ -86,14 +86,34 @@ Add to `~/.claude/mcp.json`:
 
 Restart Claude Code (the MCP server loads at session start; `claude --resume` works too — it spawns a new process which re-reads `mcp.json`).
 
-#### Pointing the server at a project (`aigency.json`)
+#### Pointing the server at a project
 
-The server injects an operating doctrine into the model's context on connect. When it can find a project **pointer manifest** (`aigency.json`, per ADR 023), it appends a project-specific section naming _this_ project's work tracker, project record, and ADR database as concrete Notion URLs.
+The server injects an operating doctrine into the model's context on connect. When it can find a project pointer manifest, it appends a project-specific section naming _this_ project's work tracker, project record, and ADR database as concrete Notion URLs.
 
-Discovery (per ADR 023): the server reads `aigency.json` from its **working directory**, overridable with a `--manifest <path>` arg. Add it after the script path:
+**Discovery — the `AGENTS.md` embedded block (recommended).** Add a fenced code block with the info-string `verevoir-mcp` to your project's `AGENTS.md`. The server reads `AGENTS.md` from its working directory at startup and parses the block's contents as the manifest JSON:
+
+````markdown
+## Project context
+
+(Human-readable pointer for any agent or developer reading this file.)
+
+```verevoir-mcp
+{
+  "notion": {
+    "workspaceRootPageId": "<your-page-id>",
+    "databases": {
+      "work_tracker": "<your-db-id>",
+      "adrs": "<your-adrs-db-id>"
+    }
+  }
+}
+```
+````
+
+**Explicit path (alternative).** Supply `--manifest <path>` after the script path to override discovery entirely. The path may be a JSON file or an `AGENTS.md`-style Markdown file containing the `verevoir-mcp` block:
 
 ```json
-"args": ["/absolute/path/to/mcp/dist/bin.js", "--manifest", "/absolute/path/to/project/aigency.json"]
+"args": ["/absolute/path/to/mcp/dist/bin.js", "--manifest", "/absolute/path/to/project/AGENTS.md"]
 ```
 
 Without a manifest the server runs in **no-project mode** — it still starts and serves the universal doctrine; only the project-specific section is omitted.

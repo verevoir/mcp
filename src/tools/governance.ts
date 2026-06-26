@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { isAbsolute, dirname, resolve as resolvePath } from 'node:path';
 import { wrapWithCache } from '@verevoir/context';
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
-import { loadManifest, manifestPath, type AigencyManifest } from '../manifest.js';
+import { loadManifest, resolveManifest, type AigencyManifest } from '../manifest.js';
 
 // Surface the project's governance — its ADRs and living model docs, the named
 // key pages, AND the framework governance that lives in the corpus repo (the
@@ -146,9 +146,11 @@ export async function loadGovernanceIndex(
 
   // Source 2+ — declared governance sources (the guardrails corpus), indexed
   // together with the record so the framework's ADRs and practices are found
-  // by the same scan. A relative source resolves against the manifest's own
-  // directory, so the committed manifest can point at a sibling clone.
-  const manifestDir = dirname(manifestPath());
+  // by the same scan. A relative source resolves against the winning source
+  // file's own directory (AGENTS.md / verevoir-mcp.json / aigency.json),
+  // so the committed manifest can point at a sibling clone portably.
+  const resolution = resolveManifest();
+  const manifestDir = resolution ? dirname(resolution.sourcePath) : process.cwd();
   for (const gov of manifest.governance ?? []) {
     const source = resolveGovernanceSource(gov.source, manifestDir);
     entries.push(...(await indexGovernanceSource(source, gov.paths)));
