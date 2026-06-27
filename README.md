@@ -284,18 +284,18 @@ Every tool call in `delegate`, `dispatch`, and the loop tools (`refine` / `searc
 
 Set `AIGENCY_AUDIT` in the MCP server's env:
 
-| Value | Effect |
-|-------|--------|
-| `off` (default) | No files written. |
-| `on` | Timing + identity fields only — no tokens or costs. |
-| `verbose` | Same as `on`, plus token counts, cost, and cost rollup on capability spans. |
+| Value           | Effect                                                                      |
+| --------------- | --------------------------------------------------------------------------- |
+| `off` (default) | No files written.                                                           |
+| `on`            | Timing + identity fields only — no tokens or costs.                         |
+| `verbose`       | Same as `on`, plus token counts, cost, and cost rollup on capability spans. |
 
 Additional env vars:
 
-| Env var | Default | Meaning |
-|---------|---------|---------|
-| `AIGENCY_AUDIT_DIR` | `./aigency-audit/` | Directory for session files (created on first write). |
-| `AIGENCY_AUDIT_SESSION_GAP` | `120` | Seconds of inactivity before a new session file is started. |
+| Env var                     | Default            | Meaning                                                     |
+| --------------------------- | ------------------ | ----------------------------------------------------------- |
+| `AIGENCY_AUDIT_DIR`         | `./aigency-audit/` | Directory for session files (created on first write).       |
+| `AIGENCY_AUDIT_SESSION_GAP` | `120`              | Seconds of inactivity before a new session file is started. |
 
 A **session** is a burst of activity. The first span after a `AIGENCY_AUDIT_SESSION_GAP`-second silence starts a fresh file named by the session-start ISO timestamp (e.g. `aigency-audit/2026-06-27T10-05-00.000Z.jsonl`). This keeps one noisy afternoon's work separate from the next morning's run.
 
