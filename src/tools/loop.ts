@@ -7,6 +7,7 @@ import { delegate, delegateDetailed } from './delegate.js';
 import { provisionFrame } from './provision.js';
 import { warmRegistry } from '../registry.js';
 import { meterFooter, resolveMeterMode, type MeterMode } from '../metering.js';
+import { openSpan, childContext, type SpanContext } from '../audit.js';
 import {
   deterministicEval,
   modelJudgeEval,
@@ -169,9 +170,9 @@ export interface StepResult {
  * Defaults to the real worker (`delegateDetailed`); injectable for tests. */
 export type StepCall = (input: { prompt: string; model?: string }) => Promise<StepResult>;
 
-function defaultStepCall(): StepCall {
+function defaultStepCall(spanCtx?: SpanContext): StepCall {
   return async ({ prompt, model }) => {
-    const r = await delegateDetailed({ prompt, model, governed: false });
+    const r = await delegateDetailed({ prompt, model, governed: false, spanCtx });
     return { text: r.text, usage: r.usage, elapsedMs: r.elapsedMs };
   };
 }
@@ -236,6 +237,8 @@ export interface RefineInput {
    * Covers the worker STEP calls (the attempt-maker, which `model` selects);
    * omit to use the `AIGENCY_METER` env default (else none). */
   meter?: MeterMode;
+  /** Audit span context to thread the cascade into refine step calls. */
+  spanCtx?: SpanContext;
 }
 
 export interface SearchInput extends RefineInput {
@@ -293,13 +296,20 @@ class LoopMeterAccumulator {
  * injectable for tests. */
 export async function runRefine(
   input: RefineInput,
-  stepCall: StepCall = defaultStepCall()
+  stepCall: StepCall = defaultStepCall(input.spanCtx)
 ): Promise<MeteredRun<RefineResult<string>>> {
   const evaluate = evaluatorFor(input.eval);
   const meter = new LoopMeterAccumulator();
+  // Open a capability span for the whole refine run; step calls thread as children
+  // via the spanCtx already injected into defaultStepCall above.
+  const capSpan = openSpan('refine', 'capability', {
+    traceId: input.spanCtx?.traceId,
+    parentId: input.spanCtx?.parentId,
+  });
   const step = makeRefineStep(input.task, input.model, stepCall, undefined, meter.record);
   meter.start();
   const result = await runRefineLoop(step, evaluate, input.stop);
+  capSpan.finish();
   return { result, meter: await meter.footer(input.meter) };
 }
 
@@ -327,17 +337,22 @@ export function resolveSeeds(input: SearchInput): string[] {
  * one global meter. `stepCall` is injectable for tests. */
 export async function runLoopSearch(
   input: SearchInput,
-  stepCall: StepCall = defaultStepCall()
+  stepCall: StepCall = defaultStepCall(input.spanCtx)
 ): Promise<MeteredRun<SearchResult<string, string>>> {
   const evaluate = evaluatorFor(input.eval);
   const seeds = resolveSeeds(input);
   const meter = new LoopMeterAccumulator();
+  const capSpan = openSpan('search', 'capability', {
+    traceId: input.spanCtx?.traceId,
+    parentId: input.spanCtx?.parentId,
+  });
   const makeStep = (seed: string) =>
     makeRefineStep(input.task, input.model, stepCall, seed, meter.record);
   meter.start();
   const result = await runSearch(seeds, makeStep, evaluate, input.stop, {
     concurrency: input.concurrency,
   });
+  capSpan.finish();
   return { result, meter: await meter.footer(input.meter) };
 }
 
@@ -456,7 +471,8 @@ function startJob(kind: LoopJobKind, work: () => Promise<string>): LoopJob {
 }
 
 /** Start a refine run in the background; poll with {@link loopResult}. `run` is
- * injectable for tests. The meter footer (when any) is appended to the result. */
+ * injectable for tests. The meter footer (when any) is appended to the result.
+ * `spanCtx` on `input` (if present) threads the audit cascade into the background run. */
 export function startRefine(
   input: RefineInput,
   run: (i: RefineInput) => Promise<MeteredRun<RefineResult<string>>> = (i) => runRefine(i)
@@ -468,7 +484,8 @@ export function startRefine(
 }
 
 /** Start a search run in the background; poll with {@link loopResult}. `run` is
- * injectable for tests. The meter footer (when any) is appended to the result. */
+ * injectable for tests. The meter footer (when any) is appended to the result.
+ * `spanCtx` on `input` (if present) threads the audit cascade into the background run. */
 export function startLoopSearch(
   input: SearchInput,
   run: (i: SearchInput) => Promise<MeteredRun<SearchResult<string, string>>> = (i) =>
@@ -533,13 +550,18 @@ export function registerLoopTools(server: McpServer): void {
       },
     },
     async ({ task, eval: evalChoice, stop, model, meter }) => {
+      // Open a tool span now (synchronous handle return); the refine loop
+      // runs in the background and its capability span carries the trace_id.
+      const toolSpan = openSpan('tool:refine_start', 'tool');
       const job = startRefine({
         task,
         eval: evalChoice as EvalChoice,
         stop: stop as StopPolicy,
         model,
         meter,
+        spanCtx: childContext(toolSpan),
       });
+      toolSpan.finish();
       return {
         content: [
           {
@@ -601,6 +623,7 @@ export function registerLoopTools(server: McpServer): void {
       },
     },
     async ({ task, eval: evalChoice, stop, model, seeds, seedCount, concurrency, meter }) => {
+      const toolSpan = openSpan('tool:search_start', 'tool');
       const job = startLoopSearch({
         task,
         eval: evalChoice as EvalChoice,
@@ -610,7 +633,9 @@ export function registerLoopTools(server: McpServer): void {
         seedCount,
         concurrency,
         meter,
+        spanCtx: childContext(toolSpan),
       });
+      toolSpan.finish();
       return {
         content: [
           {

@@ -7,6 +7,7 @@ import { tierModel } from '../tiers.js';
 import { meterFooter, resolveMeterMode, type MeterMode } from '../metering.js';
 import { usageFromResponse } from '../openai-compat.js';
 import { warmRegistry } from '../registry.js';
+import { openSpan, type SpanContext } from '../audit.js';
 import {
   sumUsages,
   type ModelClass,
@@ -85,6 +86,8 @@ export async function delegateDetailed(
     model?: string;
     governed?: boolean;
     verify?: boolean;
+    /** Audit span context to thread the cascade (optional; omit for standalone calls). */
+    spanCtx?: SpanContext;
   },
   provision: (prose: string) => Promise<string> = (prose) =>
     provisionFrame({ prose, autoTag: true }),
@@ -93,6 +96,15 @@ export async function delegateDetailed(
 ): Promise<WorkerCall> {
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
+
+  // Open a capability-level audit span for this delegate call. The span wraps
+  // the whole call (including verify retries); the per-model-call span is
+  // opened inside `callWorker` and threaded as a child.
+  const capSpan = openSpan('delegate', 'capability', {
+    traceId: input.spanCtx?.traceId,
+    parentId: input.spanCtx?.parentId,
+  });
+
   const cfg = workerConfig();
   let baseUrl = cfg.baseUrl;
   let apiKey = cfg.apiKey;
@@ -134,6 +146,11 @@ export async function delegateDetailed(
   // endpoint — is fixed. Never throws: every failure path is a legible
   // `ok: false` message.
   const callWorker = async (userContent: string): Promise<WorkerCall> => {
+    // Open a model-call span as a child of the capability span.
+    const modelSpan = openSpan(`delegate:model:${model}`, 'model', {
+      traceId: capSpan.traceId,
+      parentId: capSpan.spanId,
+    });
     const messages = [
       ...(system ? [{ role: 'system', content: system }] : []),
       { role: 'user', content: userContent },
@@ -149,6 +166,7 @@ export async function delegateDetailed(
         body: JSON.stringify({ model, messages }),
       });
     } catch (err) {
+      modelSpan.finish();
       return {
         text:
           `Could not reach the worker at ${url} (${String(err).slice(0, 120)}). ` +
@@ -161,6 +179,7 @@ export async function delegateDetailed(
     }
     if (!res.ok) {
       const body = await res.text().catch(() => '');
+      modelSpan.finish();
       return {
         text: `Worker returned HTTP ${res.status} from ${url} (model=${model}): ${body.slice(0, 200)}`,
         ok: false,
@@ -175,6 +194,7 @@ export async function delegateDetailed(
     } | null;
     const content = json?.choices?.[0]?.message?.content;
     if (!content) {
+      modelSpan.finish();
       return {
         text: `Worker at ${url} returned no message content (model=${model}).`,
         ok: false,
@@ -183,17 +203,62 @@ export async function delegateDetailed(
         elapsedMs: elapsed(),
       };
     }
+    const usage = usageFromResponse(model, json?.usage);
+    // Finish the model span with verbose attributes when usage was reported.
+    if (usage) {
+      const u = usage[model];
+      modelSpan.finish({
+        model,
+        tokens_in: u?.in,
+        tokens_out: u?.out,
+        cached: u?.cacheRead,
+      });
+    } else {
+      modelSpan.finish();
+    }
     return {
       text: content,
       ok: true,
       model,
-      usage: usageFromResponse(model, json?.usage),
+      usage,
       elapsedMs: elapsed(),
     };
   };
 
-  if (!input.verify) return callWorker(input.prompt);
-  return runReviewed(input.prompt, model, callWorker, makeReviewer, elapsed);
+  if (!input.verify) {
+    const r = await callWorker(input.prompt);
+    // Finish the capability span (non-verify path has no rollup cost).
+    capSpan.finish();
+    return r;
+  }
+  const reviewed = await runReviewed(input.prompt, model, callWorker, makeReviewer, elapsed);
+  // Finish the capability span; on the verify path include a cost rollup when
+  // usage was reported.
+  const totalUsage = reviewed.usages ?? (reviewed.usage ? [reviewed.usage] : []);
+  if (totalUsage.length > 0) {
+    // Compute total cost lazily — warmRegistry may not have run yet for a
+    // verify-path call, but best-effort is fine here (audit is observability,
+    // not billing).
+    try {
+      const { estimateCostUSD } = await import('@verevoir/llm');
+      const { sumUsages: su } = await import('@verevoir/llm');
+      const rolled = su(totalUsage);
+      let costRollup = 0;
+      for (const [id, u] of Object.entries(rolled)) {
+        const { catalogEntryFor } = await import('@verevoir/llm');
+        const rates = catalogEntryFor(id)?.rates;
+        if (rates) {
+          costRollup += estimateCostUSD({ [id]: u }, { [id]: rates as [number, number] });
+        }
+      }
+      capSpan.finish({ cost_rollup: costRollup });
+    } catch {
+      capSpan.finish();
+    }
+  } else {
+    capSpan.finish();
+  }
+  return reviewed;
 }
 
 /** The directive for a verify re-produce: the original prompt plus the review's
@@ -332,6 +397,8 @@ export async function delegate(
     governed?: boolean;
     verify?: boolean;
     meter?: MeterMode;
+    /** Audit span context to thread the cascade (optional). */
+    spanCtx?: SpanContext;
   },
   provision: (prose: string) => Promise<string> = (prose) =>
     provisionFrame({ prose, autoTag: true }),
@@ -492,13 +559,19 @@ export async function registerDelegateTool(server: McpServer): Promise<void> {
           ),
       },
     },
-    async ({ prompt, system, model, governed, verify, meter }) => ({
-      content: [
-        {
-          type: 'text' as const,
-          text: await delegate({ prompt, system, model, governed, verify, meter }),
-        },
-      ],
-    })
+    async ({ prompt, system, model, governed, verify, meter }) => {
+      const toolSpan = openSpan('tool:delegate', 'tool');
+      const text = await delegate({
+        prompt,
+        system,
+        model,
+        governed,
+        verify,
+        meter,
+        spanCtx: { traceId: toolSpan.traceId, parentId: toolSpan.spanId },
+      });
+      toolSpan.finish();
+      return { content: [{ type: 'text' as const, text }] };
+    }
   );
 }

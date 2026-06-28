@@ -10,7 +10,8 @@
     "verevoir-a2a": "./dist/a2a-bin.js",
     "verevoir-a2a-watch": "./dist/a2a-watch-bin.js",
     "verevoir-card-sync": "./dist/card-sync-bin.js",
-    "verevoir-review": "./dist/review-bin.js"
+    "verevoir-review": "./dist/review-bin.js",
+    "verevoir-audit-trace": "./dist/audit-trace-bin.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
