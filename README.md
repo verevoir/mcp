@@ -90,7 +90,7 @@ Restart Claude Code (the MCP server loads at session start; `claude --resume` wo
 
 The server injects an operating doctrine into the model's context on connect. When it finds a project pointer manifest, it appends a project-specific section naming _this_ project's work tracker, project record, and ADR database as concrete Notion URLs.
 
-**Add a `verevoir-mcp` block to your project's `AGENTS.md`.** This is the recommended (and only documented) way to point the server at a project. `AGENTS.md` is already the per-repo agent context file the `agent-context-file-maintained` practice requires — putting the manifest there keeps the pointer with the rest of the project context, with no separate file to drift.
+**Add a `verevoir-mcp` block to your project's `AGENTS.md`.** This is the way to point the server at project documentation and task trackers. `AGENTS.md` is already the per-repo agent context file the `agent-context-file-maintained` practice requires — putting the manifest there keeps the pointer with the rest of the project context, with no separate file to drift.
 
 The server reads `AGENTS.md` from its working directory at startup. Add a fenced code block whose info-string is `verevoir-mcp` anywhere in the file; the block body is parsed as the manifest JSON:
 
@@ -131,6 +131,10 @@ A present-but-malformed source at any step (bad JSON, missing block) is skipped 
 Without this flag, Claude Code auto-defers MCP tool schemas when total tool definitions exceed ~10% of the context window — only tool _names_ are sent up front; the model must call `ToolSearch` to load each schema before using it. That extra step makes the verevoir tools lose against always-on shell reflex (`grep`, `cat`, `find`) at the moment of choosing a tool — defeating the cache + freshness benefits of the MCP layer. `alwaysLoad: true` (Claude Code v2.1.121+) forces every tool from this server into the session at startup, so `read_file` / `grep` / `find_symbol` / `list_cards` are reflex-reachable. Older Claude Code versions ignore the flag (no breakage). The cost is ~2–5KB of context — worth it.
 
 Env vars are read per-tool: GitHub tools only need `GITHUB_TOKEN`; Trello tools only need the three `TRELLO_*` vars; Notion tools (both source and workflow) only need `NOTION_API_KEY`. The server starts regardless of which are set — missing-env errors surface at tool-call time with clear messages naming the variable.
+
+## Using with other MCP clients
+
+`@verevoir/mcp` is a stdio server and works with any MCP client. See [docs/clients.md](docs/clients.md) for per-client config snippets covering Warp, Cursor, Gemini CLI, OpenAI Codex CLI, opencode, Cline, Continue, and Zed.
 
 ## Sanity check
 
