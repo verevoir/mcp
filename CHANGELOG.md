@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.60.1 — 2026-06-28
+
+- **Consume `@verevoir/llm` 0.17.0 — fixes the audit-log `verbose` cost double-count** (STDIO-487). Bumps the `@verevoir/llm` dependency from `^0.15.0` to `^0.17.0`, pulling in the `shapeUsage` fix (cached input tokens were priced twice — the ~80% cost overshoot) plus the capped HTTP-retry ladder (0.16.0). Cost attribution in the audit log's `verbose` mode (and any path that shapes usage via `@verevoir/llm`) is now correct. No mcp source change.
+
 ## 0.60.0 — 2026-06-28
 
 - **Audit log — per-session JSONL trace of every tool call** (STDIO-486). New env var `AIGENCY_AUDIT` (`off` default / `on` / `verbose`) enables an append-only per-session JSONL file in `./aigency-audit/` (override with `AIGENCY_AUDIT_DIR`). A session is a burst of activity: a new file is started when the gap since the last entry exceeds 120 s (override with `AIGENCY_AUDIT_SESSION_GAP` seconds). Files are named by session-start ISO timestamp. Every entry is an OpenTelemetry-shaped span: `trace_id`, `span_id`, `parent_span_id`, `name`, `kind` (`capability` | `tool` | `model`), `start`, `end`, `duration_ms`. `verbose` mode adds `attributes`: `model`, `tokens_in`, `tokens_out`, `cached`, `cost`, and `cost_rollup` at the capability level. `delegate`, `dispatch`, and all loop (`refine` / `search`) tool handlers are instrumented — every tool call emits a span, and nested work (capability → tool → model) is threaded via `parent_span_id`. Zero-dep, zero-token: pure Node.js stdlib (`node:fs`, `node:crypto`, `node:path`). The `AIGENCY_METER` per-call param is unaffected (inline cost-in-result footer). New `SpanContext` / `childContext()` exported from `src/audit.ts` for downstream consumers. Existing metering double-count (cached tokens priced twice in `@verevoir/llm`'s `shapeUsage`) flagged for a separate `@verevoir/llm` PR — see note in PR description.
