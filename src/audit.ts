@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 // Three modes, set via AIGENCY_AUDIT:
 //   'off'     — nothing written (default).
 //   'on'      — span fields only: trace_id, span_id, parent_span_id, name,
-//               kind, start, end, duration_ms.
+//               kind, start, end, duration_ms, note (when derivable).
 //   'verbose' — the above plus an `attributes` object: model, tokens_in,
 //               tokens_out, cached, cost per span, and a capability-level
 //               cost rollup on the root span.
@@ -20,6 +20,11 @@ import { randomUUID } from 'node:crypto';
 // Zero dependencies: timestamps, append, gap-detection — pure Node stdlib.
 // The verbose attributes record only usage the provider already returned;
 // no tokens are spent to produce them.
+//
+// STDIO-489 additions:
+//   note — optional per-span context (derived from tool args, zero-token).
+//   purpose — root-span label read from AIGENCY_AUDIT_PURPOSE env and
+//             inherited by child spans via SpanContext (set once, read-only).
 
 export type AuditMode = 'off' | 'on' | 'verbose';
 const AUDIT_MODES: AuditMode[] = ['off', 'on', 'verbose'];
@@ -27,14 +32,128 @@ const AUDIT_MODES: AuditMode[] = ['off', 'on', 'verbose'];
 /** Span kinds in the cascade. */
 export type SpanKind = 'capability' | 'tool' | 'model';
 
+// ── Note derivation (STDIO-489) ───────────────────────────────────────────────
+// A small, zero-token arg-extractor: derives a single salient string (the
+// `note`) from a tool call's arguments. Turns `tool:write_file` into a line
+// that reads `write_file → src/auth/login.ts`. Applied at `on` mode so it is
+// always visible, never gated to `verbose`.
+//
+// Guard rails — all applied in `deriveNote`:
+//   - Never throws: an absent/oddly-shaped arg yields no note.
+//   - Length-capped at NOTE_MAX_CHARS grapheme clusters.
+//   - Single-line: newlines collapsed to a space before the cap.
+//   - Pure scripting: no model calls, no async, no external deps.
+//
+// OTLP / sensitive-data note (telemetry-excludes-sensitive-data):
+//   Notes derived from file paths are structural identifiers (safe).
+//   Notes derived from task/prompt text (delegate / dispatch / refine /
+//   search) are truncated excerpts of LLM prompt content, which MAY contain
+//   user-supplied data. The local JSONL is fine for all notes. However, when
+//   OTLP export is enabled (verevoir-audit-trace --otlp) the note is emitted
+//   as a span attribute and shipped to the configured backend (Datadog /
+//   Jaeger / Grafana Tempo). Operators who consider prompt content sensitive
+//   should either (a) redact the note at export time with the
+//   `--elide-notes` flag (see audit-trace-bin.ts) or (b) avoid OTLP export
+//   of session files that include prompt-derived notes.
+
+/** Maximum grapheme-cluster length for a derived note. */
+export const NOTE_MAX_CHARS = 120;
+
+/** A static map from tool name → the argument key(s) that yield the note.
+ * `path` tools use path; `task` tools use prompt/task text (first line,
+ * truncated). Extend here as new tools are instrumented. */
+const NOTE_ARG_KEYS: Record<string, string[]> = {
+  write_file: ['path'],
+  edit_file: ['path'],
+  read_file: ['path'],
+  grep: ['pattern', 'path'],
+  find_symbol: ['name', 'path'],
+  open_pull_request: ['title'],
+  delegate: ['prompt'],
+  dispatch: ['prompt'],
+  refine: ['task'],
+  search: ['task'],
+  refine_start: ['task'],
+  search_start: ['task'],
+};
+
+/**
+ * Safely truncate `s` to at most `max` grapheme clusters, collapsing all
+ * newlines to a single space first. Grapheme-safe in V8 via Intl.Segmenter
+ * (Node ≥ 16); falls back to a simple slice if Segmenter is absent (no older
+ * runtime support is promised but the fallback never throws).
+ */
+export function truncateNote(s: string, max: number = NOTE_MAX_CHARS): string {
+  // Collapse all newline variants to a space and trim runs of whitespace.
+  const oneLine = s.replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
+  if (oneLine.length === 0) return '';
+  try {
+    const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    const clusters = [...seg.segment(oneLine)];
+    if (clusters.length <= max) return oneLine;
+    return clusters
+      .slice(0, max)
+      .map((g) => g.segment)
+      .join('')
+      .trimEnd();
+  } catch {
+    // Intl.Segmenter absent or threw — plain character-slice as fallback.
+    return oneLine.length <= max ? oneLine : oneLine.slice(0, max).trimEnd();
+  }
+}
+
+/**
+ * Derive a salient one-line note from a tool name + its call arguments.
+ * Returns `undefined` (no note) when nothing useful can be derived.
+ * Never throws — any odd shape or missing key yields `undefined`.
+ *
+ * @param toolName  The short tool name (e.g. `write_file`, `delegate`).
+ * @param args      The raw arguments object from the tool call.
+ */
+export function deriveNote(
+  toolName: string,
+  args: Record<string, unknown> | undefined
+): string | undefined {
+  try {
+    if (!args) return undefined;
+    const keys = NOTE_ARG_KEYS[toolName];
+    if (!keys || keys.length === 0) return undefined;
+    for (const key of keys) {
+      const raw = args[key];
+      if (raw === undefined || raw === null) continue;
+      const s = String(raw);
+      if (s.trim().length === 0) continue;
+      // For task/prompt fields: take only the first non-empty line so a
+      // multi-paragraph prompt doesn't dominate the note.
+      const firstLine = s.split(/[\r\n]+/)[0] ?? s;
+      const note = truncateNote(firstLine.trim());
+      if (note.length > 0) return note;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The shape of one JSONL entry (OTel-shaped). `attributes` is present only
- * in verbose mode and only when the span has usage to report. */
+ * in verbose mode and only when the span has usage to report. `note` is an
+ * optional one-line context string present in `on` and `verbose` modes when
+ * a salient arg can be derived from the tool call. */
 export interface AuditSpan {
   trace_id: string;
   span_id: string;
   parent_span_id?: string;
   name: string;
   kind: SpanKind;
+  /** Optional one-line context derived from the tool call's salient argument
+   * (e.g. a file path, a PR title, or the first line of a task). Never
+   * present when nothing useful can be derived. Set at `on` mode (not gated
+   * to `verbose`). See the OTLP/sensitive-data note at the top of this file
+   * for export guidance. */
+  note?: string;
+  /** The run's ambient purpose, propagated from AIGENCY_AUDIT_PURPOSE env
+   * (or explicitly via SpanContext). Absent when not set. */
+  purpose?: string;
   start: string; // ISO 8601
   end: string; // ISO 8601
   duration_ms: number;
@@ -156,20 +275,45 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+// ── Purpose resolution (STDIO-489) ───────────────────────────────────────────
+// A run's ambient purpose labels the ROOT span (and is propagated to children
+// via SpanContext). The cheapest consistent source is an env var set before
+// the MCP server starts; the context propagation carries it from there.
+
+/** Read the ambient audit purpose from the environment. Returns undefined when
+ * the var is absent or blank — callers should treat absence as "no purpose". */
+export function resolveAuditPurpose(): string | undefined {
+  const raw = process.env.AIGENCY_AUDIT_PURPOSE?.trim();
+  return raw && raw.length > 0 ? truncateNote(raw, NOTE_MAX_CHARS) : undefined;
+}
+
 /** Open a span, returning a `finish` function that writes it. Usage is
  * optional; when supplied and the mode is verbose it lands in `attributes`.
  * `traceId` defaults to the current session id; `parentId` threads the
- * cascade so the flame chart reconstructs from parent refs. */
+ * cascade so the flame chart reconstructs from parent refs.
+ *
+ * STDIO-489 additions:
+ *   `note`    — an optional one-line context string (e.g. a file path or
+ *               truncated task). Written at `on` mode; skip for spans where
+ *               nothing useful is known at open time.
+ *   `purpose` — inherited from `SpanContext` or resolved from env. Set on
+ *               root spans; propagated to children via `childContext`. */
 export function openSpan(
   name: string,
   kind: SpanKind,
   opts: {
     traceId?: string;
     parentId?: string;
+    /** One-line context derived from the tool call's salient arg. */
+    note?: string;
+    /** Ambient run purpose (from SpanContext or AIGENCY_AUDIT_PURPOSE env). */
+    purpose?: string;
   } = {}
 ): {
   spanId: string;
   traceId: string;
+  /** Purpose carried by this span (for propagation via childContext). */
+  purpose?: string;
   finish: (attrs?: AuditSpan['attributes']) => void;
 } {
   const startMs = Date.now();
@@ -182,10 +326,14 @@ export function openSpan(
   // even before finish() triggers appendSpan (which updates _lastEntryAt).
   _sessionActive = true;
   const traceId = opts.traceId ?? _sessionId ?? randomUUID();
+  // Purpose: explicit opt wins; else fall back to the env var (root spans).
+  // Children should pass it via SpanContext / childContext, not re-read env.
+  const purpose = opts.purpose ?? resolveAuditPurpose();
 
   return {
     spanId,
     traceId,
+    purpose,
     finish: (attrs?: AuditSpan['attributes']) => {
       _sessionActive = false;
       const endMs = Date.now();
@@ -196,6 +344,8 @@ export function openSpan(
         ...(opts.parentId ? { parent_span_id: opts.parentId } : {}),
         name,
         kind,
+        ...(opts.note ? { note: opts.note } : {}),
+        ...(purpose ? { purpose } : {}),
         start: startIso,
         end: endIso,
         duration_ms: endMs - startMs,
@@ -212,15 +362,27 @@ export function openSpan(
 }
 
 // ── Context propagation helpers ───────────────────────────────────────────────
-// Thread trace_id + parent_span_id from the capability root through every
-// nested span, so the parent_span_id chain reconstructs the cascade.
+// Thread trace_id + parent_span_id + purpose from the capability root through
+// every nested span, so the parent_span_id chain reconstructs the cascade and
+// the run's ambient purpose appears on every span without repeated env reads.
 
 export interface SpanContext {
   traceId: string;
   parentId?: string;
+  /** Propagated ambient purpose (from AIGENCY_AUDIT_PURPOSE or explicit). */
+  purpose?: string;
 }
 
-/** Build a child context from a parent span, for threading into nested calls. */
-export function childContext(parent: { traceId: string; spanId: string }): SpanContext {
-  return { traceId: parent.traceId, parentId: parent.spanId };
+/** Build a child context from a parent span, for threading into nested calls.
+ * Purpose is inherited: if the parent carried one it flows to every child. */
+export function childContext(parent: {
+  traceId: string;
+  spanId: string;
+  purpose?: string;
+}): SpanContext {
+  return {
+    traceId: parent.traceId,
+    parentId: parent.spanId,
+    ...(parent.purpose ? { purpose: parent.purpose } : {}),
+  };
 }

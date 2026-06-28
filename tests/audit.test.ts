@@ -1,14 +1,17 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   resolveAuditConfig,
   resetAudit,
   openSpan,
-  appendSpan,
   currentSessionId,
   childContext,
+  deriveNote,
+  truncateNote,
+  resolveAuditPurpose,
+  NOTE_MAX_CHARS,
   type AuditSpan,
 } from '../src/audit.js';
 
@@ -249,6 +252,16 @@ describe('childContext', () => {
     const ctx = childContext({ traceId: 'trace-1', spanId: 'span-1' });
     expect(ctx).toEqual({ traceId: 'trace-1', parentId: 'span-1' });
   });
+
+  it('propagates purpose when parent carries one', () => {
+    const ctx = childContext({ traceId: 'trace-1', spanId: 'span-1', purpose: 'STDIO-489' });
+    expect(ctx).toEqual({ traceId: 'trace-1', parentId: 'span-1', purpose: 'STDIO-489' });
+  });
+
+  it('omits purpose when parent has none', () => {
+    const ctx = childContext({ traceId: 'trace-1', spanId: 'span-1' });
+    expect(ctx.purpose).toBeUndefined();
+  });
 });
 
 // ── appendSpan write failure ──────────────────────────────────────────────────
@@ -264,5 +277,238 @@ describe('appendSpan write failure', () => {
       const { finish } = openSpan('t', 'tool');
       finish(); // triggers appendSpan, which tries mkdirSync and fails
     }).not.toThrow();
+  });
+});
+
+// ── truncateNote (STDIO-489) ──────────────────────────────────────────────────
+
+describe('truncateNote', () => {
+  it('returns the string unchanged when it fits within the cap', () => {
+    expect(truncateNote('hello world')).toBe('hello world');
+  });
+
+  it('truncates to NOTE_MAX_CHARS grapheme clusters', () => {
+    const long = 'a'.repeat(NOTE_MAX_CHARS + 10);
+    const result = truncateNote(long);
+    expect(result.length).toBeLessThanOrEqual(NOTE_MAX_CHARS);
+  });
+
+  it('collapses newlines to a space', () => {
+    expect(truncateNote('first\nsecond')).toBe('first second');
+  });
+
+  it('collapses carriage-return newlines to a space', () => {
+    expect(truncateNote('first\r\nsecond')).toBe('first second');
+  });
+
+  it('trims surrounding whitespace after collapsing', () => {
+    expect(truncateNote('  hello  ')).toBe('hello');
+  });
+
+  it('returns an empty string for a blank input', () => {
+    expect(truncateNote('')).toBe('');
+    expect(truncateNote('   ')).toBe('');
+  });
+
+  it('handles a multi-codepoint emoji correctly (grapheme safety)', () => {
+    // The family emoji 👨‍👩‍👧‍👦 is multiple code points but one grapheme cluster.
+    // We cannot assert it preserves exactly N clusters without Intl.Segmenter,
+    // but we can assert it never throws and the result is a string.
+    const emoji = '👨‍👩‍👧‍👦'.repeat(130);
+    expect(() => truncateNote(emoji)).not.toThrow();
+    expect(typeof truncateNote(emoji)).toBe('string');
+  });
+
+  it('respects a custom max length', () => {
+    expect(truncateNote('abcdef', 3)).toHaveLength(3);
+  });
+});
+
+// ── deriveNote (STDIO-489) ────────────────────────────────────────────────────
+
+describe('deriveNote', () => {
+  it('derives path from write_file args', () => {
+    expect(deriveNote('write_file', { path: 'src/auth/login.ts' })).toBe('src/auth/login.ts');
+  });
+
+  it('derives path from read_file args', () => {
+    expect(deriveNote('read_file', { path: 'src/index.ts' })).toBe('src/index.ts');
+  });
+
+  it('derives path from edit_file args', () => {
+    expect(deriveNote('edit_file', { path: 'src/utils.ts', oldString: 'x', newString: 'y' })).toBe(
+      'src/utils.ts'
+    );
+  });
+
+  it('derives pattern from grep args', () => {
+    expect(deriveNote('grep', { pattern: 'openSpan' })).toBe('openSpan');
+  });
+
+  it('derives name from find_symbol args', () => {
+    expect(deriveNote('find_symbol', { name: 'AuditSpan' })).toBe('AuditSpan');
+  });
+
+  it('derives title from open_pull_request args', () => {
+    expect(deriveNote('open_pull_request', { title: 'STDIO-489: add span notes' })).toBe(
+      'STDIO-489: add span notes'
+    );
+  });
+
+  it('derives first line of prompt from delegate args', () => {
+    expect(deriveNote('delegate', { prompt: 'Write a test\nMore details here' })).toBe(
+      'Write a test'
+    );
+  });
+
+  it('derives first line of prompt from dispatch args', () => {
+    expect(deriveNote('dispatch', { prompt: 'Review the codebase\nFor security issues' })).toBe(
+      'Review the codebase'
+    );
+  });
+
+  it('derives task from refine_start args', () => {
+    expect(deriveNote('refine_start', { task: 'Summarise the following text' })).toBe(
+      'Summarise the following text'
+    );
+  });
+
+  it('derives task from search_start args', () => {
+    expect(deriveNote('search_start', { task: 'Generate a haiku' })).toBe('Generate a haiku');
+  });
+
+  it('returns undefined for an unknown tool', () => {
+    expect(deriveNote('unknown_tool', { path: '/some/path' })).toBeUndefined();
+  });
+
+  it('returns undefined when args is undefined', () => {
+    expect(deriveNote('write_file', undefined)).toBeUndefined();
+  });
+
+  it('returns undefined when the relevant arg is missing', () => {
+    expect(deriveNote('write_file', { content: 'hello' })).toBeUndefined();
+  });
+
+  it('returns undefined when the relevant arg is an empty string', () => {
+    expect(deriveNote('write_file', { path: '   ' })).toBeUndefined();
+  });
+
+  it('never throws on an oddly-shaped args object', () => {
+    expect(() => deriveNote('write_file', { path: null as unknown as string })).not.toThrow();
+    expect(() => deriveNote('write_file', { path: 42 as unknown as string })).not.toThrow();
+  });
+
+  it('caps the note at NOTE_MAX_CHARS', () => {
+    const long = 'x'.repeat(NOTE_MAX_CHARS + 50);
+    const note = deriveNote('write_file', { path: long });
+    expect(note).toBeDefined();
+    expect(note!.length).toBeLessThanOrEqual(NOTE_MAX_CHARS);
+  });
+});
+
+// ── note and purpose on spans (STDIO-489) ─────────────────────────────────────
+
+describe('when audit mode is "on" — note field', () => {
+  beforeEach(() => {
+    resetAudit({ mode: 'on', dir: tmpAuditDir, sessionGapMs: 120_000 });
+  });
+
+  it('note is written when passed to openSpan', () => {
+    const { finish } = openSpan('tool:write_file', 'tool', { note: 'src/auth/login.ts' });
+    finish();
+    const [s] = readSpans(tmpAuditDir);
+    expect(s.note).toBe('src/auth/login.ts');
+  });
+
+  it('note is absent when not passed to openSpan', () => {
+    const { finish } = openSpan('tool:delegate', 'tool');
+    finish();
+    const [s] = readSpans(tmpAuditDir);
+    expect(s.note).toBeUndefined();
+  });
+});
+
+// ── purpose (STDIO-489) ───────────────────────────────────────────────────────
+
+describe('resolveAuditPurpose', () => {
+  afterEach(() => {
+    delete process.env.AIGENCY_AUDIT_PURPOSE;
+  });
+
+  it('returns undefined when AIGENCY_AUDIT_PURPOSE is not set', () => {
+    delete process.env.AIGENCY_AUDIT_PURPOSE;
+    expect(resolveAuditPurpose()).toBeUndefined();
+  });
+
+  it('returns the trimmed value when AIGENCY_AUDIT_PURPOSE is set', () => {
+    process.env.AIGENCY_AUDIT_PURPOSE = '  STDIO-489  ';
+    expect(resolveAuditPurpose()).toBe('STDIO-489');
+  });
+
+  it('returns undefined for a blank AIGENCY_AUDIT_PURPOSE', () => {
+    process.env.AIGENCY_AUDIT_PURPOSE = '   ';
+    expect(resolveAuditPurpose()).toBeUndefined();
+  });
+
+  it('caps the purpose at NOTE_MAX_CHARS', () => {
+    process.env.AIGENCY_AUDIT_PURPOSE = 'x'.repeat(NOTE_MAX_CHARS + 20);
+    const p = resolveAuditPurpose();
+    expect(p).toBeDefined();
+    expect(p!.length).toBeLessThanOrEqual(NOTE_MAX_CHARS);
+  });
+});
+
+describe('when audit mode is "on" — purpose field', () => {
+  beforeEach(() => {
+    resetAudit({ mode: 'on', dir: tmpAuditDir, sessionGapMs: 120_000 });
+    delete process.env.AIGENCY_AUDIT_PURPOSE;
+  });
+
+  afterEach(() => {
+    delete process.env.AIGENCY_AUDIT_PURPOSE;
+  });
+
+  it('purpose is written when AIGENCY_AUDIT_PURPOSE env is set', () => {
+    process.env.AIGENCY_AUDIT_PURPOSE = 'STDIO-489';
+    const { finish } = openSpan('tool:delegate', 'tool');
+    finish();
+    const [s] = readSpans(tmpAuditDir);
+    expect(s.purpose).toBe('STDIO-489');
+  });
+
+  it('purpose is absent when AIGENCY_AUDIT_PURPOSE is not set', () => {
+    const { finish } = openSpan('tool:delegate', 'tool');
+    finish();
+    const [s] = readSpans(tmpAuditDir);
+    expect(s.purpose).toBeUndefined();
+  });
+
+  it('purpose passed explicitly via opts overrides env', () => {
+    process.env.AIGENCY_AUDIT_PURPOSE = 'from-env';
+    const { finish } = openSpan('tool:delegate', 'tool', { purpose: 'from-opts' });
+    finish();
+    const [s] = readSpans(tmpAuditDir);
+    expect(s.purpose).toBe('from-opts');
+  });
+
+  it('purpose is propagated to child spans via childContext', () => {
+    process.env.AIGENCY_AUDIT_PURPOSE = 'STDIO-489';
+    const parent = openSpan('tool:delegate', 'tool');
+    const child = openSpan('delegate', 'capability', {
+      ...childContext(parent),
+    });
+    child.finish();
+    parent.finish();
+    const spans = readSpans(tmpAuditDir);
+    for (const s of spans) {
+      expect(s.purpose).toBe('STDIO-489');
+    }
+  });
+
+  it('openSpan returns purpose for use in childContext', () => {
+    process.env.AIGENCY_AUDIT_PURPOSE = 'STDIO-489';
+    const span = openSpan('tool:delegate', 'tool');
+    expect(span.purpose).toBe('STDIO-489');
+    span.finish();
   });
 });

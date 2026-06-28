@@ -7,7 +7,7 @@ import { tierModel } from '../tiers.js';
 import { meterFooter, resolveMeterMode, type MeterMode } from '../metering.js';
 import { usageFromResponse } from '../openai-compat.js';
 import { warmRegistry } from '../registry.js';
-import { openSpan, type SpanContext } from '../audit.js';
+import { openSpan, deriveNote, type SpanContext } from '../audit.js';
 import {
   sumUsages,
   type ModelClass,
@@ -103,6 +103,7 @@ export async function delegateDetailed(
   const capSpan = openSpan('delegate', 'capability', {
     traceId: input.spanCtx?.traceId,
     parentId: input.spanCtx?.parentId,
+    purpose: input.spanCtx?.purpose,
   });
 
   const cfg = workerConfig();
@@ -560,7 +561,9 @@ export async function registerDelegateTool(server: McpServer): Promise<void> {
       },
     },
     async ({ prompt, system, model, governed, verify, meter }) => {
-      const toolSpan = openSpan('tool:delegate', 'tool');
+      const toolSpan = openSpan('tool:delegate', 'tool', {
+        note: deriveNote('delegate', { prompt }),
+      });
       const text = await delegate({
         prompt,
         system,
@@ -568,7 +571,11 @@ export async function registerDelegateTool(server: McpServer): Promise<void> {
         governed,
         verify,
         meter,
-        spanCtx: { traceId: toolSpan.traceId, parentId: toolSpan.spanId },
+        spanCtx: {
+          traceId: toolSpan.traceId,
+          parentId: toolSpan.spanId,
+          purpose: toolSpan.purpose,
+        },
       });
       toolSpan.finish();
       return { content: [{ type: 'text' as const, text }] };

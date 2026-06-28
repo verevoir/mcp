@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// verevoir-audit-trace (STDIO-486) — convert a session JSONL audit file into
-// a format suitable for interactive flame-chart inspection.
+// verevoir-audit-trace (STDIO-486/STDIO-489) — convert a session JSONL audit
+// file into a format suitable for interactive flame-chart inspection.
 //
 // Usage:
 //   verevoir-audit-trace <session.jsonl>              # → Chrome Trace JSON (stdout)
 //   verevoir-audit-trace <session.jsonl> --otlp       # → OTLP JSON (stdout)
 //   verevoir-audit-trace <session.jsonl> -o out.json  # write to file instead of stdout
+//   verevoir-audit-trace <session.jsonl> --elide-notes  # suppress note/purpose in output
 //
 // Open the Chrome Trace output at:
 //   speedscope.app  (drop the file)
@@ -15,6 +16,15 @@
 // Open the OTLP output in Datadog / Jaeger / Grafana Tempo after importing.
 //
 // Pure transform, no deps beyond stdlib.
+//
+// Sensitive-data note (STDIO-489 / telemetry-excludes-sensitive-data):
+//   The `note` field on spans derived from task/prompt args may contain
+//   excerpts of LLM prompt content (truncated to 120 chars, first line only).
+//   Path-derived notes are structural identifiers and are safe.
+//   When exporting to an OTLP backend (Datadog / Jaeger / Tempo), prompt
+//   excerpts travel outside the local machine. Operators who treat prompt
+//   content as sensitive should pass `--elide-notes` to suppress note and
+//   purpose fields from the OTLP export. The local JSONL is unaffected.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -26,12 +36,14 @@ const args = process.argv.slice(2);
 
 function usage(): void {
   process.stderr.write(
-    'Usage: verevoir-audit-trace <session.jsonl> [--otlp] [-o <output.json>]\n' +
+    'Usage: verevoir-audit-trace <session.jsonl> [--otlp] [--elide-notes] [-o <output.json>]\n' +
       '\n' +
       'Converts a session audit JSONL file to a flame-chart format.\n' +
       '\n' +
       'Options:\n' +
       '  --otlp           Emit OTLP JSON instead of Chrome Trace format.\n' +
+      '  --elide-notes    Omit note and purpose fields from output (for OTLP\n' +
+      '                   export when prompt content is considered sensitive).\n' +
       '  -o <file>        Write output to <file> instead of stdout.\n' +
       '\n' +
       'View Chrome Trace output at speedscope.app, Perfetto (ui.perfetto.dev),\n' +
@@ -46,6 +58,7 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
 }
 
 const otlpMode = args.includes('--otlp');
+const elideNotes = args.includes('--elide-notes');
 const outIdx = args.indexOf('-o');
 const outputFile = outIdx >= 0 ? args[outIdx + 1] : null;
 const inputFile = args.find((a) => !a.startsWith('-') && a !== (outputFile ?? ''));
@@ -95,7 +108,10 @@ interface ChromeTraceEvent {
 
 const KIND_TID: Record<string, number> = { tool: 1, capability: 2, model: 3 };
 
-function toChromeTrace(spans: AuditSpan[]): { traceEvents: ChromeTraceEvent[] } {
+function toChromeTrace(
+  spans: AuditSpan[],
+  opts: { elideNotes?: boolean } = {}
+): { traceEvents: ChromeTraceEvent[] } {
   const traceEvents: ChromeTraceEvent[] = spans.map((s) => {
     const startMs = Date.parse(s.start);
     const pid = hashPid(s.trace_id);
@@ -105,8 +121,17 @@ function toChromeTrace(spans: AuditSpan[]): { traceEvents: ChromeTraceEvent[] } 
       ...(s.parent_span_id ? { parent_span_id: s.parent_span_id } : {}),
       ...(s.attributes ?? {}),
     };
+    // Include note and purpose in Chrome Trace args so speedscope / Perfetto
+    // display them in the detail panel when a frame is selected.
+    if (!opts.elideNotes) {
+      if (s.note) args['note'] = s.note;
+      if (s.purpose) args['purpose'] = s.purpose;
+    }
+    // Enrich the displayed frame name with the note so it is visible in the
+    // timeline without opening the detail panel (e.g. "write_file → src/a.ts").
+    const name = !opts.elideNotes && s.note ? `${s.name} → ${s.note}` : s.name;
     return {
-      name: s.name,
+      name,
       ph: 'X',
       ts: startMs * 1000, // ms → µs
       dur: s.duration_ms * 1000,
@@ -147,13 +172,21 @@ interface OtlpSpan {
 
 const OTLP_KIND: Record<string, number> = { tool: 3, capability: 1, model: 3 };
 
-function toOtlp(spans: AuditSpan[]): unknown {
+function toOtlp(spans: AuditSpan[], opts: { elideNotes?: boolean } = {}): unknown {
   const otlpSpans: OtlpSpan[] = spans.map((s) => {
     const startNs = BigInt(Date.parse(s.start)) * BigInt(1_000_000);
     const endNs = startNs + BigInt(s.duration_ms) * BigInt(1_000_000);
     const attrs: OtlpSpan['attributes'] = [
       { key: 'span.kind.label', value: { stringValue: s.kind } },
     ];
+    // Include note and purpose as OTLP string attributes so Datadog / Jaeger /
+    // Grafana Tempo display them alongside the span. When --elide-notes is
+    // passed, these fields are suppressed (see the sensitive-data note at the
+    // top of this file).
+    if (!opts.elideNotes) {
+      if (s.note) attrs.push({ key: 'note', value: { stringValue: s.note } });
+      if (s.purpose) attrs.push({ key: 'purpose', value: { stringValue: s.purpose } });
+    }
     if (s.attributes) {
       for (const [k, v] of Object.entries(s.attributes)) {
         if (v === undefined || v === null) continue;
@@ -201,7 +234,8 @@ if (spans.length === 0) {
   process.stderr.write('warn: no spans found in the input file.\n');
 }
 
-const output = otlpMode ? toOtlp(spans) : toChromeTrace(spans);
+const converterOpts = { elideNotes };
+const output = otlpMode ? toOtlp(spans, converterOpts) : toChromeTrace(spans, converterOpts);
 const json = JSON.stringify(output, null, 2);
 
 if (outputFile) {
