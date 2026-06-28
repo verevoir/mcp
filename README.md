@@ -280,6 +280,74 @@ Pass **`meter`** (`totals-only` | `verbose`) to append a token + cost + time foo
 
 Because runs are background jobs, the coordinator holds the handle and polls until done — you just see the result and its trace. (Distinct from the MCP **prompts** above: those are host-executed skill _templates_; the loops are _tools_ you steer in natural language.)
 
+## Audit log
+
+Every tool call in `delegate`, `dispatch`, and the loop tools (`refine` / `search`) can write a structured trace to a per-session JSONL file. The trace is OpenTelemetry-shaped — you can replay a session as an interactive flame chart in under 30 seconds.
+
+### Configuring the audit log
+
+Set `AIGENCY_AUDIT` in the MCP server's env:
+
+| Value           | Effect                                                                      |
+| --------------- | --------------------------------------------------------------------------- |
+| `off` (default) | No files written.                                                           |
+| `on`            | Timing + identity fields only — no tokens or costs.                         |
+| `verbose`       | Same as `on`, plus token counts, cost, and cost rollup on capability spans. |
+
+Additional env vars:
+
+| Env var                     | Default            | Meaning                                                     |
+| --------------------------- | ------------------ | ----------------------------------------------------------- |
+| `AIGENCY_AUDIT_DIR`         | `./aigency-audit/` | Directory for session files (created on first write).       |
+| `AIGENCY_AUDIT_SESSION_GAP` | `120`              | Seconds of inactivity before a new session file is started. |
+
+A **session** is a burst of activity. The first span after a `AIGENCY_AUDIT_SESSION_GAP`-second silence starts a fresh file named by the session-start ISO timestamp (e.g. `aigency-audit/2026-06-27T10-05-00.000Z.jsonl`). This keeps one noisy afternoon's work separate from the next morning's run.
+
+The per-call `meter` param on `delegate` / `dispatch` / `refine_start` / `search_start` is a separate, unrelated feature — it appends an inline cost-in-result footer to that single call's result text. The audit log is session-wide and file-backed; `meter` is per-call and text-only. Both can be active at the same time.
+
+### Reading the audit log — view as a flame chart
+
+**The headline view: convert a session to Chrome Trace and open it in speedscope.app:**
+
+```bash
+verevoir-audit-trace aigency-audit/2026-06-27T10-05-00.000Z.jsonl > trace.json
+# then open trace.json at https://speedscope.app — drag and drop
+```
+
+The converter (`verevoir-audit-trace`) is the bin installed alongside the package. By default it emits **Chrome Trace Event JSON** (`{ traceEvents: [...] }`), which any of these viewers accept:
+
+- **speedscope.app** — drag the JSON file in; the "Timeline" view shows the cascade as a flame chart.
+- **Perfetto UI** (ui.perfetto.dev) — open via File → Open trace file.
+- **chrome://tracing** — load the file from the load button.
+
+Pass `--otlp` to emit OTLP-JSON instead (for Jaeger / Tempo / any OpenTelemetry collector). Use `-o <file>` to write to a file rather than stdout.
+
+**Span entry schema** (one JSON object per line in the `.jsonl`):
+
+```ts
+{
+  trace_id: string;        // UUID shared by all spans in one session trace
+  span_id: string;         // UUID unique to this span
+  parent_span_id?: string; // UUID of the parent span (absent for root spans)
+  name: string;            // e.g. "tool:delegate", "delegate", "delegate:model:DeepSeek-V3.2"
+  kind: "capability" | "tool" | "model";
+  start: string;           // ISO 8601 timestamp
+  end: string;             // ISO 8601 timestamp
+  duration_ms: number;
+  // only in verbose mode:
+  attributes?: {
+    model?: string;        // model name (model spans)
+    tokens_in?: number;
+    tokens_out?: number;
+    cached?: number;       // cached input tokens (model spans)
+    cost?: number;         // USD cost of this model call (model spans)
+    cost_rollup?: number;  // total USD across all model spans in the capability (capability spans)
+  };
+}
+```
+
+**How to reconstruct the cascade.** Spans in a single session share a `trace_id`. A span whose `parent_span_id` matches another span's `span_id` is its child. The typical shape is: a `tool` span (the MCP handler) → a `capability` span (the full `delegate` / `dispatch` run) → one or more `model` spans (each LLM call). The converter builds the flame chart from this nesting automatically.
+
 ## Board card sync (CI)
 
 The `card-sync` workflow moves a PR's work-tracker card through the board from the PR lifecycle — **opened → "In preview"**, **merged → "Done"** — keyed off the `<Namespace>-<id>` work-item id in the branch (STDIO-236). Deterministic and best-effort: an unknown card or missing config is logged and **never blocks the merge**.

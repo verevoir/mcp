@@ -218,6 +218,36 @@ Both results carry the full **trace** (every iteration's score and feedback, the
 
 Because runs are background jobs, the coordinator holds the handle and polls until done — you just see the result and its trace. (Distinct from the MCP **prompts** below: those are host-executed skill *templates*; the loops are *tools* you steer in natural language.)
 
+## Audit log
+
+Set `AIGENCY_AUDIT` in the MCP server's env to enable a per-session JSONL trace file.
+
+`AIGENCY_AUDIT` values: `off` (default, no files), `on` (timing + identity spans), `verbose` (adds token counts, cost, cost_rollup on capability spans).
+
+Additional env vars: `AIGENCY_AUDIT_DIR` (default `./aigency-audit/`), `AIGENCY_AUDIT_SESSION_GAP` (default `120`, seconds of inactivity before a new session file starts).
+
+A session is a gap-delimited burst. File names are ISO timestamps (e.g. `aigency-audit/2026-06-27T10-05-00.000Z.jsonl`). `delegate`, `dispatch`, and all loop tools are instrumented. The `meter` per-call param is separate and unaffected — it appends an inline text footer; the audit log is file-backed and session-wide.
+
+Span entry schema (one JSON object per line):
+- `trace_id` / `span_id` / `parent_span_id?` — UUID fields; all spans in a session share `trace_id`; cascade is reconstructable from `parent_span_id`.
+- `name` — e.g. `"tool:delegate"`, `"delegate"`, `"delegate:model:DeepSeek-V3.2"`.
+- `kind` — `"capability" | "tool" | "model"`.
+- `start` / `end` — ISO 8601. `duration_ms` — number.
+- `attributes` (verbose only) — `model?`, `tokens_in?`, `tokens_out?`, `cached?`, `cost?`, `cost_rollup?`.
+
+Cascade shape: `tool` span (MCP handler) → `capability` span (full delegate/dispatch run) → `model` span(s) (each LLM call). The cascade is reconstructable from `parent_span_id`.
+
+### Viewing as a flame chart
+
+Convert a session JSONL to Chrome Trace Event format and open in speedscope.app:
+
+```bash
+verevoir-audit-trace aigency-audit/2026-06-27T10-05-00.000Z.jsonl > trace.json
+# drag trace.json into https://speedscope.app — Timeline view shows the flame chart
+```
+
+`--otlp` emits OTLP-JSON (for Jaeger / Tempo). `-o <file>` writes to a file instead of stdout. Also works with Perfetto UI (ui.perfetto.dev) and chrome://tracing.
+
 ## Prompts
 
 The server also registers the guardrails **reasoning skills** (`corpus/skills/*.md`) as MCP prompts. Invoking a prompt returns the skill's instructions plus your arguments as a message for your own model to execute, so a skill runs on the host's tokens. The corpus source defaults to the canonical guardrails repo (override with `AIGENCY_GUARDRAILS_URL`); loading is best-effort, so a missing token simply means no skill prompts. Requires an MCP client that supports prompts.

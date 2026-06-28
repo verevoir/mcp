@@ -11,6 +11,7 @@ import {
   type TokenUsage,
   type PerModelUsage,
 } from '@verevoir/llm';
+import { openSpan, childContext, type SpanContext } from '../audit.js';
 import { runWithVerify, formatFindings, type VerifyFinding } from '@verevoir/recipes/engine';
 import { reasoningReviewer, type Reviewer } from './review.js';
 import { meterFooter, resolveMeterMode, roundUsage, type MeterMode } from '../metering.js';
@@ -277,6 +278,8 @@ export async function dispatchTask(
     maxIterations?: number;
     meter?: MeterMode;
     verify?: boolean;
+    /** Audit span context to thread the cascade (optional). */
+    spanCtx?: SpanContext;
   },
   deps: DispatchDeps = {}
 ): Promise<string> {
@@ -300,6 +303,14 @@ export async function dispatchTask(
 
   const maxIterations = input.maxIterations ?? 12;
 
+  // Open a capability-level audit span for this dispatch call. Each agentic
+  // iteration emits a child model span; the whole run finishes the cap span.
+  const capSpan = openSpan('dispatch', 'capability', {
+    traceId: input.spanCtx?.traceId,
+    parentId: input.spanCtx?.parentId,
+  });
+  const capCtx = childContext(capSpan);
+
   // One agentic run over the source. The user content varies per call (a verify
   // re-run folds the review findings in); the toolbelt, model, and source-aware
   // prompt are fixed. Collects this run's per-round usage + stage labels.
@@ -317,15 +328,23 @@ export async function dispatchTask(
       onUsage: async (u) => {
         // Carry cache tokens through so the meter prices a cache hit at the cache
         // rate (the saving stays visible) rather than at the full input rate.
-        usages.push(
-          roundUsage(
-            u.model,
-            u.inputTokens,
-            u.outputTokens,
-            u.cacheReadInputTokens,
-            u.cacheCreationInputTokens
-          )
+        const usage = roundUsage(
+          u.model,
+          u.inputTokens,
+          u.outputTokens,
+          u.cacheReadInputTokens,
+          u.cacheCreationInputTokens
         );
+        usages.push(usage);
+        // Per-iteration model span — child of the capability span.
+        const iterSpan = openSpan(`dispatch:model:${u.model}`, 'model', capCtx);
+        const mu = usage[u.model];
+        iterSpan.finish({
+          model: u.model,
+          tokens_in: mu?.in,
+          tokens_out: mu?.out,
+          cached: mu?.cacheRead,
+        });
       },
       onIteration: async (info) => {
         const names = info.toolUses.map((u) => u.name).join(', ') || '(thinking)';
@@ -338,6 +357,7 @@ export async function dispatchTask(
 
   if (!input.verify) {
     const r = await runAgent(input.prompt);
+    capSpan.finish();
     return formatDispatch({
       result: r.result,
       usages: r.usages,
@@ -347,7 +367,9 @@ export async function dispatchTask(
       meter: input.meter,
     });
   }
-  return runDispatchReviewed(input, entry.provider, runAgent, makeReviewer);
+  const text = await runDispatchReviewed(input, entry.provider, runAgent, makeReviewer);
+  capSpan.finish();
+  return text;
 }
 
 /** One agentic run: the worker's result plus the per-round usage + stage labels
@@ -676,17 +698,21 @@ export function registerDispatchTool(server: McpServer): void {
           ).catch(() => {});
         }
       };
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: await dispatchTask(
-              { prompt, model, source, maxIterations, verify, meter },
-              { onProgress }
-            ),
-          },
-        ],
-      };
+      const toolSpan = openSpan('tool:dispatch', 'tool');
+      const text = await dispatchTask(
+        {
+          prompt,
+          model,
+          source,
+          maxIterations,
+          verify,
+          meter,
+          spanCtx: { traceId: toolSpan.traceId, parentId: toolSpan.spanId },
+        },
+        { onProgress }
+      );
+      toolSpan.finish();
+      return { content: [{ type: 'text' as const, text }] };
     }
   );
 
