@@ -24,6 +24,16 @@ const TIER_ENVS = [
   'AIGENCY_WORKER_URL',
   'AIGENCY_WORKER_API_KEY',
   'TIER_TEST_KEY',
+  // Provider keys — cleared/restored so resolution is hermetic regardless of the
+  // runner's ambient env. Without this, a real shell with provider keys present
+  // makes a default tier resolvable, flipping the "null / ignored" assertions.
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'SAMBA_NOVA_API_KEY',
+  'MISTRAL_API_KEY',
 ];
 
 const saved: Record<string, string | undefined> = {};
