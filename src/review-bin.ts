@@ -6,17 +6,17 @@ import {
   isClean,
   type VerifyResult,
 } from '@verevoir/recipes/engine';
-import type { ModelClass, ModelConnection } from '@verevoir/llm';
-import { tierModel } from './tiers.js';
+import type { ModelClass } from '@verevoir/llm';
+import { tierChat, type TierChat } from './tiers.js';
 import { reasoningReviewer, reasoningChatFn } from './tools/review.js';
 import { loadPracticeBodies, renderFrame } from './tools/provision.js';
 
-// LOCAL ADVERSARIAL REVIEW (STDIO-473) — the off-CI review path. A repo that
-// can't run the CI gate (a free private repo has no Actions minutes for it)
-// wires a pre-push hook that `npx verevoir-review`s the push: the same
+// LOCAL ADVERSARIAL REVIEW (STDIO-473 / STDIO-467) — the off-CI review path. A
+// repo that can't run the CI gate (a free private repo has no Actions minutes
+// for it) wires a pre-push hook that `npx verevoir-review`s the push: the same
 // reasoning-tier antagonist that backs the delegate verify (STDIO-458), held to
-// the same provisioned corpus rubric, but driven over the local git diff
-// instead of a worker's output.
+// the same provisioned corpus rubric, but driven over the local git diff instead
+// of a worker's output.
 //
 // FAIL CLOSED is the whole point. A gate that silently passes when it can't run
 // is worse than no gate — the push goes through believing it was reviewed. So:
@@ -142,13 +142,18 @@ export function gatherChange(args: Args, cwd: string): GatherResult {
  * with no readable practices is a hard stop. */
 export async function provisionRubric(
   description: string,
-  conn: ModelConnection
+  tierResult: TierChat
 ): Promise<string | null> {
-  const { chat } = reasoningChatFn(conn);
+  const { chat } = reasoningChatFn(tierResult);
+  // provisionPractices wants an apiKey; for adapter-resolved tiers we pass null
+  // (the adapter already handles auth). For direct-URI tiers the key is in
+  // tierResult but we don't surface it here — the adapter's ChatFn closes over
+  // it already. This null is fine: the recipes engine passes it only to the
+  // OpenAI-compat subpath, which our ChatFn doesn't use.
   let ids: string[];
   let taggingFailed = false;
   try {
-    ids = await provisionPractices({ prose: description }, conn.apiKey, 'reasoning', chat);
+    ids = await provisionPractices({ prose: description }, null, 'reasoning', chat);
   } catch {
     // Concern-tagging is best-effort; the floor is the irreducible bar. Note it
     // so a floor-only review is distinguishable from a fully-tagged one.
@@ -183,13 +188,13 @@ export async function run(
   cwd: string,
   out: (s: string) => void,
   deps: {
-    tier?: (t: ModelClass) => Promise<ModelConnection | null>;
+    tier?: (t: ModelClass) => Promise<TierChat | null>;
     gather?: (args: Args, cwd: string) => GatherResult;
-    provision?: (description: string, conn: ModelConnection) => Promise<string | null>;
+    provision?: (description: string, tierResult: TierChat) => Promise<string | null>;
     makeReviewer?: typeof reasoningReviewer;
   } = {}
 ): Promise<number> {
-  const tier = deps.tier ?? tierModel;
+  const tier = deps.tier ?? tierChat;
   const gather = deps.gather ?? gatherChange;
   const provision = deps.provision ?? provisionRubric;
   const makeReviewer = deps.makeReviewer ?? reasoningReviewer;
@@ -218,15 +223,15 @@ export async function run(
   }
   const { change, description } = gathered;
 
-  const conn = await tier('reasoning');
-  if (!conn) {
+  const resolved = await tier('reasoning');
+  if (!resolved) {
     out(
       'verevoir-review: cannot run — no reasoning tier configured (set AIGENCY_MODEL_REASONING and its provider key). Failing closed; the push was NOT reviewed.'
     );
     return EXIT.cannotRun;
   }
 
-  const rubric = await provision(description, conn);
+  const rubric = await provision(description, resolved);
   if (!rubric) {
     out(
       'verevoir-review: cannot run — could not load the corpus rubric (check AIGENCY_GUARDRAILS_URL / corpus access). Failing closed; reviewing against no bar would be no review at all.'

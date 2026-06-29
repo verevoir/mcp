@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import type { ModelClass, ModelConnection } from '@verevoir/llm';
+import type { ModelClass } from '@verevoir/llm';
+import type { TierChat } from '../src/tiers.js';
 import {
   parseArgs,
   assembleChange,
@@ -11,11 +12,13 @@ import {
   type GatherResult,
 } from '../src/review-bin.js';
 
-const conn: ModelConnection = {
-  provider: 'rtest',
+// A minimal TierChat stub for tests that need a non-null tier.
+const stubTier: TierChat = {
+  chat: async () => {
+    throw new Error('stub — not expected to be called in these tests');
+  },
   modelId: 'vrf-reasoner',
-  baseUrl: 'https://reasoner.example/v1',
-  apiKey: 'sk-r',
+  provider: 'rtest',
 };
 
 describe('parseArgs', () => {
@@ -83,7 +86,7 @@ describe('formatVerdict', () => {
 // pass. Deps are injected so the decision is tested without a live model.
 describe('run — fail-closed wiring', () => {
   const nullTier = async (_t: ModelClass) => null;
-  const okTier = async (_t: ModelClass) => conn;
+  const okTier = async (_t: ModelClass) => stubTier;
   const gather = (): GatherResult => ({
     kind: 'change',
     change: 'diff',

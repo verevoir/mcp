@@ -1,14 +1,25 @@
-import { modelConnection, type ModelClass, type ModelConnection } from '@verevoir/llm';
-import { warmRegistry } from './registry.js';
+import type { ChatOptions, ChatReply, ModelClass } from '@verevoir/llm';
+import { resolveModelByTerm } from '@verevoir/llm';
+import { warmRegistry, importProviderAdapter } from './registry.js';
 
-// Per-tier model slots (STDIO-380). aigency's model tiers map to the llm
-// ModelClass ladder — reasoning / drafting / extraction — and each can be set,
-// by family or id, via AIGENCY_MODEL_<TIER>. The named model resolves (through
-// the registry) to a usable OpenAI-compatible connection at use time, so config
-// names a model by family and the concrete version binds when it runs
-// (STDIO-378). The coordinator/opus tier is the HOST's model, not set here;
-// these govern aigency's own tiers — the extraction worker (delegate), and (a
-// follow-on) the reasoning concern-tagger.
+// STDIO-467 — Uniform tier resolution.
+//
+// Each tier (reasoning / drafting / extraction) is configured via a three-var
+// triple:
+//
+//   AIGENCY_MODEL_<TIER>       — model name/id or provider family; unset → default
+//   AIGENCY_MODEL_<TIER>_URI   — optional; direct OpenAI-compatible endpoint URI
+//   AIGENCY_MODEL_<TIER>_KEY   — optional bearer key for that endpoint
+//
+// When _URI is set, the tier uses a direct OpenAI-compat call (no provider
+// adapter). When _URI is absent, the model name resolves through the uniform
+// provider adapter layer (Anthropic / Gemini / OpenAI-compat / local).
+//
+// AIGENCY_WORKER_* is a deprecated alias for the extraction tier's triple:
+//   AIGENCY_WORKER_MODEL  → AIGENCY_MODEL_EXTRACTION
+//   AIGENCY_WORKER_URL    → AIGENCY_MODEL_EXTRACTION_URI
+//   AIGENCY_WORKER_API_KEY → AIGENCY_MODEL_EXTRACTION_KEY
+// The extraction tier reads both; the AIGENCY_MODEL_EXTRACTION_* vars win.
 
 export const TIER_ENV: Record<ModelClass, string> = {
   reasoning: 'AIGENCY_MODEL_REASONING',
@@ -16,15 +27,213 @@ export const TIER_ENV: Record<ModelClass, string> = {
   extraction: 'AIGENCY_MODEL_EXTRACTION',
 };
 
+const TIER_URI_ENV: Record<ModelClass, string> = {
+  reasoning: 'AIGENCY_MODEL_REASONING_URI',
+  drafting: 'AIGENCY_MODEL_DRAFTING_URI',
+  extraction: 'AIGENCY_MODEL_EXTRACTION_URI',
+};
+
+const TIER_KEY_ENV: Record<ModelClass, string> = {
+  reasoning: 'AIGENCY_MODEL_REASONING_KEY',
+  drafting: 'AIGENCY_MODEL_DRAFTING_KEY',
+  extraction: 'AIGENCY_MODEL_EXTRACTION_KEY',
+};
+
+/** Defaults when AIGENCY_MODEL_<TIER> is unset. */
+export const TIER_DEFAULTS: Record<ModelClass, string> = {
+  reasoning: 'opus',
+  drafting: 'sonnet',
+  extraction: 'haiku',
+};
+
 /**
- * Resolve a tier's configured model (`AIGENCY_MODEL_<TIER>` — a family or id) to
- * a usable OpenAI-compatible connection, or `null` when the tier env is unset or
- * the model can't be resolved (no configured provider serves it, or it's
- * SDK-only). Warms the registry so the catalog is populated.
+ * The deprecated AIGENCY_WORKER_* envs are aliases for the extraction-tier
+ * triple. AIGENCY_MODEL_EXTRACTION_* wins when both are set.
  */
-export async function tierModel(tier: ModelClass): Promise<ModelConnection | null> {
-  const term = process.env[TIER_ENV[tier]]?.trim();
-  if (!term) return null;
+const WORKER_COMPAT: { model: string; uri: string; key: string } = {
+  model: 'AIGENCY_WORKER_MODEL',
+  uri: 'AIGENCY_WORKER_URL',
+  key: 'AIGENCY_WORKER_API_KEY',
+};
+
+/** Read the three-var triple for a tier, applying the AIGENCY_WORKER_* alias
+ * for the extraction tier (deprecated; AIGENCY_MODEL_EXTRACTION_* wins). */
+export function tierEnvConfig(tier: ModelClass): {
+  model: string | null;
+  uri: string | null;
+  key: string | null;
+} {
+  const model =
+    process.env[TIER_ENV[tier]]?.trim() ||
+    (tier === 'extraction' ? process.env[WORKER_COMPAT.model]?.trim() : undefined) ||
+    null;
+  const uri =
+    process.env[TIER_URI_ENV[tier]]?.trim() ||
+    (tier === 'extraction' ? process.env[WORKER_COMPAT.uri]?.trim() : undefined) ||
+    null;
+  const key =
+    process.env[TIER_KEY_ENV[tier]]?.trim() ||
+    (tier === 'extraction' ? process.env[WORKER_COMPAT.key]?.trim() : undefined) ||
+    null;
+  return { model, uri, key };
+}
+
+/** Validate that the _URI env is a well-formed http(s) URL; throw a legible
+ * error (surfaced at tier-resolution time, not at use time) when it is not. */
+function validateUri(uri: string, envName: string): void {
+  try {
+    const u = new URL(uri);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      throw new Error(`must be an http or https URL`);
+    }
+  } catch {
+    throw new Error(`${envName} is not a valid http(s) URL: "${uri.slice(0, 80)}"`);
+  }
+}
+
+// ── Provider → ChatFn dispatch ──────────────────────────────────────────────
+//
+// Each provider adapter subpath exports a `chat` function with the same
+// ChatOptions → ChatReply signature. The map below mirrors the IMPORTERS map in
+// registry.ts; importing the adapter module registers its catalog + connection
+// (which resolveModelByTerm needs) and also gives us the `chat` fn.
+
+/** A provider-agnostic chat function: (ChatOptions) → ChatReply. */
+export type ChatFn = (options: ChatOptions) => Promise<ChatReply>;
+
+const PROVIDER_CHAT_LOADERS: Record<string, () => Promise<{ chat: ChatFn }>> = {
+  openai: () => import('@verevoir/llm/openai'),
+  deepseek: () => import('@verevoir/llm/deepseek'),
+  samba: () => import('@verevoir/llm/samba'),
+  mistral: () => import('@verevoir/llm/mistral'),
+  anthropic: () => import('@verevoir/llm/anthropic'),
+  google: () => import('@verevoir/llm/google'),
+};
+
+/** Load the `chat` function for a known provider, or null when unknown. */
+async function chatForProvider(provider: string): Promise<ChatFn | null> {
+  const loader = PROVIDER_CHAT_LOADERS[provider];
+  if (!loader) return null;
+  const mod = await loader();
+  return mod.chat;
+}
+
+// ── Direct OpenAI-compat chat (for _URI tiers) ─────────────────────────────
+
+/** One chat-completions call to a direct OpenAI-compatible endpoint (the
+ * _URI path). Throws on transport / HTTP / empty-content — callers handle. */
+async function directCompatChat(
+  uri: string,
+  modelId: string,
+  apiKey: string | null,
+  options: ChatOptions
+): Promise<ChatReply> {
+  const messages = [
+    { role: 'system', content: options.systemPrompt },
+    ...options.turns.map((t) => ({
+      role: t.role,
+      content: typeof t.content === 'string' ? t.content : JSON.stringify(t.content),
+    })),
+  ];
+  const res = await fetch(`${uri.replace(/\/+$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+    },
+    body: JSON.stringify({ model: modelId, messages }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`tier endpoint HTTP ${res.status} (${modelId}): ${body.slice(0, 160)}`);
+  }
+  const json = (await res.json().catch(() => null)) as {
+    choices?: { message?: { content?: string } }[];
+  } | null;
+  const content = json?.choices?.[0]?.message?.content;
+  if (!content) throw new Error(`tier endpoint returned no content (${modelId})`);
+  return {
+    content,
+    usage: {
+      provider: 'openai-compat',
+      model: modelId,
+      direction: 'extraction',
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    },
+    stopReason: 'end_turn',
+  };
+}
+
+// ── Public API ──────────────────────────────────────────────────────────────
+
+/** A resolved tier: the chat function to drive and the concrete model id (for
+ * the meter, logs, and descriptions). */
+export interface TierChat {
+  /** The provider-agnostic chat function for this tier. */
+  chat: ChatFn;
+  /** The concrete model id (e.g. `claude-opus-4-7`, `DeepSeek-V3.2`). */
+  modelId: string;
+  /** The provider id, when resolved through a known adapter (e.g. `anthropic`).
+   * `undefined` for a direct-URI tier. */
+  provider?: string;
+}
+
+/**
+ * Resolve a tier to a usable ChatFn via the uniform provider layer.
+ *
+ * Resolution order:
+ * 1. If `_URI` is set → direct OpenAI-compat endpoint (validated).
+ * 2. Else resolve the model name (or the default) via `resolveModelByTerm`
+ *    through the known provider adapters.
+ * 3. Returns `null` when the tier has no configured model AND the default
+ *    doesn't resolve (no provider serves it).
+ *
+ * Never throws on an unresolvable model — returns null so callers can surface
+ * a legible "not configured" note rather than crashing.
+ */
+export async function tierChat(tier: ModelClass): Promise<TierChat | null> {
+  const { model: rawModel, uri, key } = tierEnvConfig(tier);
+
+  // ── Direct-URI path ──────────────────────────────────────────────────────
+  if (uri) {
+    // KEY without URI is meaningless — only note it here, don't error: the URI
+    // is missing so we fall through to adapter resolution. This branch handles
+    // only the case where URI IS set.
+    validateUri(uri, TIER_URI_ENV[tier] || `${TIER_ENV[tier]}_URI`);
+    const modelId = rawModel || tier; // fallback to tier name when no model is given
+    const baseUri = uri.replace(/\/+$/, '');
+    const chat: ChatFn = (opts) => directCompatChat(baseUri, modelId, key, opts);
+    return { chat, modelId };
+  }
+
+  // ── Adapter resolution path ──────────────────────────────────────────────
   await warmRegistry();
-  return modelConnection(term, { modelClass: tier });
+  const term = rawModel || TIER_DEFAULTS[tier];
+  const entry = resolveModelByTerm(term, { modelClass: tier });
+  if (!entry) {
+    // The default didn't resolve either — no registered provider serves it.
+    return null;
+  }
+
+  // Import the adapter for this provider to get the `chat` function that the
+  // llm library's catalog entry was registered against.
+  const adapter = await importProviderAdapter(entry.provider);
+  if (!adapter) return null;
+  const mod = adapter as { chat?: ChatFn };
+  if (typeof mod.chat !== 'function') return null;
+
+  return { chat: mod.chat, modelId: entry.currentId, provider: entry.provider };
+}
+
+/**
+ * The description of which reasoning providers are supported + configured,
+ * for surface in tool descriptions. Mirrors provision.ts's
+ * `reasoningProvidersSummary` but scoped to the tier system.
+ */
+export function tierProvidersSummary(): string {
+  const names = Object.keys(PROVIDER_CHAT_LOADERS);
+  return `Supported providers: ${names.join(', ')}.`;
 }

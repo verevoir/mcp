@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.61.0 — 2026-06-29
+
+- **Uniform tier call path — Anthropic / Gemini / OpenAI-compat / local all resolve** (STDIO-467). Replaces the `tierModel` → `modelConnection` (compat-only) path with a new `tierChat` that resolves tiers through the llm library's uniform provider-adapter layer. Every provider that registers a `chat` fn (Anthropic, Gemini, OpenAI, DeepSeek, SambaNova, Mistral, and direct-compat endpoints) now works for any tier — closing the gap where `AIGENCY_MODEL_REASONING=opus` with `ANTHROPIC_API_KEY` silently returned null.
+
+  **Per-tier triple.** Each tier (`reasoning` / `drafting` / `extraction`) is configured via three env vars: `AIGENCY_MODEL_<TIER>` (model name/id or family; unset → default), `AIGENCY_MODEL_<TIER>_URI` (optional direct OpenAI-compat endpoint), `AIGENCY_MODEL_<TIER>_KEY` (optional bearer key for that endpoint; KEY without URI is a no-op). When `_URI` is set the tier uses a direct OpenAI-compat fetch (validated on read); when not the model term resolves through the adapter catalog.
+
+  **Defaults.** `AIGENCY_MODEL_REASONING` unset → `opus`; `AIGENCY_MODEL_DRAFTING` unset → `sonnet`; `AIGENCY_MODEL_EXTRACTION` unset → `haiku`. These resolve through whichever provider's catalog the term matches (e.g. `opus` → Anthropic when `ANTHROPIC_API_KEY` is set).
+
+  **`AIGENCY_WORKER_*` deprecated** — `AIGENCY_WORKER_MODEL`, `AIGENCY_WORKER_URL`, `AIGENCY_WORKER_API_KEY` are now aliases for `AIGENCY_MODEL_EXTRACTION`, `AIGENCY_MODEL_EXTRACTION_URI`, `AIGENCY_MODEL_EXTRACTION_KEY`. Both forms work; the `AIGENCY_MODEL_EXTRACTION_*` vars take precedence. The `workerConfig()` export reads both.
+
+  **Touches:** `src/tiers.ts` (new `tierChat`, `tierEnvConfig`, `TIER_DEFAULTS`, `TierChat` type), `src/tools/review.ts` (reasoning reviewer now drives the adapter's `ChatFn`; `reasoningChatFn` takes `TierChat`), `src/tools/delegate.ts` (`tier` param type `TierChat | null`; native-adapter path added alongside the existing raw-fetch path), `src/review-bin.ts` (`provisionRubric` takes `TierChat`; `run`'s `tier` dep takes `TierChat | null`). 16 new tier tests; all 492 pass.
+
+  **Not in this PR:** guardrails env-docs update (flagged follow-on; single-repo scope).
+
 ## 0.60.2 — 2026-06-28
 
 - **Audit log — per-span context notes and ambient run purpose** (STDIO-489). Adds `note?: string` and `purpose?: string` to `AuditSpan`. `note` is a zero-token, zero-model per-span label derived from the tool call's salient argument (`write_file`/`edit_file`/`read_file` → path; `grep` → pattern; `find_symbol` → name; `open_pull_request` → title; `delegate`/`dispatch`/`refine_start`/`search_start` → first line of the task/prompt, truncated to 120 grapheme clusters). `purpose` is an ambient run label read once from `AIGENCY_AUDIT_PURPOSE` and inherited by every child span via `SpanContext` / `childContext`. Both fields appear at `on` mode (not gated to `verbose`). **Guard rails:** note derivation never throws (bad args → no note); the cap is grapheme-cluster-safe via `Intl.Segmenter`; newlines are collapsed to a single space before the cap; the env var is also capped and trimmed. **Converter:** `verevoir-audit-trace` now includes `note` and `purpose` in Chrome Trace frame names (`name → note`) and in `args`, and as OTLP string attributes. New `--elide-notes` flag suppresses both fields from OTLP export for operators who treat prompt content as sensitive (addresses the `telemetry-excludes-sensitive-data` concern: path-derived notes are structural identifiers; prompt-derived notes are truncated excerpts of LLM prompt content and should be redacted when exporting to third-party OTLP backends). New exports: `deriveNote`, `truncateNote`, `resolveAuditPurpose`, `NOTE_MAX_CHARS`. 169 new tests; all 479 pass.
