@@ -1,22 +1,13 @@
 import { makeAdversarialReview, type ChatFn, type Verifier } from '@verevoir/recipes/engine';
-import type {
-  ChatReply,
-  ModelClass,
-  ModelConnection,
-  PerModelUsage,
-  TokenUsage,
-  Turn,
-} from '@verevoir/llm';
-import { tierModel } from '../tiers.js';
+import type { ChatReply, ModelClass, PerModelUsage, TokenUsage, Turn } from '@verevoir/llm';
+import { tierChat, type TierChat } from '../tiers.js';
 import { usageFromResponse, type WorkerUsage } from '../openai-compat.js';
 
-// REVIEW (STDIO-458) — the antagonistic-review verify for the generation tools.
-// The shared rubric verifier (`@verevoir/recipes/engine`) runs on the REASONING
-// tier — a capable model, never the weak worker it is judging — so a delegate
-// worker's output is held to a real reviewer before it is returned. The tier is
-// whatever AIGENCY_MODEL_REASONING resolves to (DeepSeek / Mistral / a local
-// model): provider-agnostic, in line with "use the Anthropic models efficiently
-// enough that we don't have to".
+// REVIEW (STDIO-458 / STDIO-467) — the antagonistic-review verify for the
+// generation tools. The shared rubric verifier (`@verevoir/recipes/engine`)
+// runs on the REASONING tier — a capable model, never the weak worker it is
+// judging. The tier resolves through the uniform provider-adapter layer so
+// Anthropic / Gemini / OpenAI-compat / local all work (STDIO-467).
 
 /** A reasoning-tier antagonist reviewer: the verifier to hand to `runWithVerify`,
  * the concrete model it runs on (for the meter + the returned note), and the
@@ -25,7 +16,7 @@ import { usageFromResponse, type WorkerUsage } from '../openai-compat.js';
 export interface Reviewer {
   verifier: Verifier;
   model: string;
-  /** The reviewer's provider (e.g. `samba`, `anthropic`) — so a caller can
+  /** The reviewer's provider (e.g. `anthropic`, `samba`) — so a caller can
    * disclose the egress of sending the reviewed text to it. Optional: a test
    * fake may omit it. */
   provider?: string;
@@ -51,86 +42,76 @@ function turnText(content: Turn['content']): string {
     : content.map((b) => (b.type === 'text' ? b.text : '')).join('');
 }
 
-/** One chat-completions call to an OpenAI-compatible reasoning connection.
- * THROWS on transport / HTTP / empty-content — the caller (delegate) catches, so
- * a review that can't run degrades to returning the work unreviewed with a
- * legible note rather than crashing the delegate call. */
-async function reasoningChat(
-  conn: ModelConnection,
-  systemPrompt: string,
-  turns: Turn[]
-): Promise<{ content: string; usage: PerModelUsage | null }> {
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    ...turns.map((t) => ({ role: t.role, content: turnText(t.content) })),
-  ];
-  const res = await fetch(`${conn.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(conn.apiKey ? { authorization: `Bearer ${conn.apiKey}` } : {}),
-    },
-    body: JSON.stringify({ model: conn.modelId, messages }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`reasoning model HTTP ${res.status} (${conn.modelId}): ${body.slice(0, 160)}`);
-  }
-  const json = (await res.json().catch(() => null)) as {
-    choices?: { message?: { content?: string } }[];
-    usage?: WorkerUsage;
-  } | null;
-  const content = json?.choices?.[0]?.message?.content;
-  if (!content) throw new Error(`reasoning model returned no content (${conn.modelId})`);
-  return { content, usage: usageFromResponse(conn.modelId, json?.usage) };
-}
+/** Wrap a TierChat's chat function in a usage-accumulating ChatFn that maps
+ * the response to the PerModelUsage shape the reviewer's meter needs.
+ * The adapter's native `chat` usage tracking (TokenUsage) is separate from the
+ * OpenAI-compat WorkerUsage we accumulate here — we only need the latter for
+ * the existing review metering surface, so we capture it via a wrapping fetch
+ * interceptor pattern. For provider-adapter tiers we call the adapter's `chat`
+ * directly and extract usage from the returned TokenUsage; for direct-URI tiers
+ * the fetch-level UsageFromResponse path in `openai-compat.ts` captures it. */
 
-/** A reasoning-tier `ChatFn` bound to a resolved connection, plus the running
- * tally of the token usage its calls cost — so a caller can meter the calls it
- * drives through this chat (the reviewer, and the bin's concern-tagging). */
+/** A reasoning-tier `ChatFn` bound to a resolved TierChat, accumulating
+ * per-call usage. Shared by the reviewer and any other reasoning step (e.g. the
+ * local-review bin's concern-tag selection) so the model wiring lives in one
+ * place. */
 export interface ReasoningChat {
   chat: ChatFn;
   usage(): PerModelUsage[];
 }
 
-/** Build an OpenAI-compatible reasoning `ChatFn` over a resolved connection,
- * accumulating per-call usage. Shared by the reviewer and any other reasoning
- * step (e.g. the local-review bin's concern-tag selection) so the model wiring
- * lives in one place rather than being duplicated per caller. */
-export function reasoningChatFn(conn: ModelConnection): ReasoningChat {
+/** Build a reasoning `ChatFn` over a resolved TierChat, accumulating per-call
+ * token usage for the meter. The adapter's TokenUsage is mapped to PerModelUsage
+ * (the same shape as `usageFromResponse` produces) so the downstream meter
+ * doesn't care which path resolved the tier. */
+export function reasoningChatFn(tierChatResult: TierChat): ReasoningChat {
   const usages: PerModelUsage[] = [];
+  const { chat: adapterChat, modelId } = tierChatResult;
+
   const chat: ChatFn = async (opts): Promise<ChatReply> => {
-    const { content, usage } = await reasoningChat(conn, opts.systemPrompt, opts.turns);
-    if (usage) usages.push(usage);
-    return { content, usage: ZERO_REPLY_USAGE, stopReason: 'end_turn' };
+    // Drive the adapter's chat. The adapter (Anthropic, Google, etc.) returns a
+    // ChatReply whose `usage` is a TokenUsage — we convert it to PerModelUsage
+    // for the existing review metering surface.
+    const reply = await adapterChat(opts);
+    const u = reply.usage;
+    if (u && (u.inputTokens > 0 || u.outputTokens > 0)) {
+      // Map TokenUsage → PerModelUsage (same shape usageFromResponse produces).
+      const workerUsage: WorkerUsage = {
+        prompt_tokens: u.inputTokens + u.cacheReadInputTokens,
+        completion_tokens: u.outputTokens,
+        prompt_tokens_details: { cached_tokens: u.cacheReadInputTokens },
+      };
+      const pu = usageFromResponse(u.model || modelId, workerUsage);
+      if (pu) usages.push(pu);
+    }
+    return { ...reply, usage: ZERO_REPLY_USAGE, stopReason: reply.stopReason || 'end_turn' };
   };
+
   return { chat, usage: () => usages };
 }
 
 /** Build the reasoning-tier antagonist reviewer, or null when no reasoning tier
- * is configured (AIGENCY_MODEL_REASONING unset / unresolvable) — the caller
- * surfaces that as a legible "returned unreviewed" note rather than silently
- * skipping the gate. `tier` is injectable for tests. `rubric`, when given, is
- * the bar the work is held to (the provisioned practice frame); omitted, the
- * reviewer applies general engineering judgement — the existing behaviour. */
+ * resolves (AIGENCY_MODEL_REASONING unset or un-resolvable). `tier` is
+ * injectable for tests. `rubric`, when given, is the bar the work is held to;
+ * omitted, the reviewer applies general engineering judgement. */
 export async function reasoningReviewer(
   artefact = 'work',
-  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel,
+  tier: (t: ModelClass) => Promise<TierChat | null> = tierChat,
   rubric?: string
 ): Promise<Reviewer | null> {
-  const conn = await tier('reasoning');
-  if (!conn) return null;
-  const { chat, usage } = reasoningChatFn(conn);
+  const resolved = await tier('reasoning');
+  if (!resolved) return null;
+  const { chat, usage } = reasoningChatFn(resolved);
   return {
     verifier: makeAdversarialReview({
       chat,
-      apiKey: conn.apiKey,
+      apiKey: null,
       modelClass: 'reasoning',
       artefact,
       rubric,
     }),
-    model: conn.modelId,
-    provider: conn.provider,
+    model: resolved.modelId,
+    provider: resolved.provider,
     usage,
   };
 }

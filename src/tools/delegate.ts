@@ -3,23 +3,18 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { runWithVerify, formatFindings, type VerifyFinding } from '@verevoir/recipes/engine';
 import { provisionFrame } from './provision.js';
 import { reasoningReviewer, type Reviewer } from './review.js';
-import { tierModel } from '../tiers.js';
+import { tierChat, type TierChat } from '../tiers.js';
 import { meterFooter, resolveMeterMode, type MeterMode } from '../metering.js';
 import { usageFromResponse } from '../openai-compat.js';
 import { warmRegistry } from '../registry.js';
 import { openSpan, deriveNote, type SpanContext } from '../audit.js';
-import {
-  sumUsages,
-  type ModelClass,
-  type ModelConnection,
-  type PerModelUsage,
-} from '@verevoir/llm';
+import { sumUsages, type ModelClass, type PerModelUsage } from '@verevoir/llm';
 
-// DELEGATE (STDIO-345) — hand a self-contained sub-task to a configured WORKER
-// model and return its result. The worker is any OpenAI-compatible chat
-// endpoint: a LOCAL model (Ollama / LM Studio) or a hosted one. This is the
-// coordinator→worker connector — it lets the model you're talking to (the
-// coordinator) offload bounded work to a cheaper or local model.
+// DELEGATE (STDIO-345 / STDIO-467) — hand a self-contained sub-task to a
+// configured WORKER model and return its result. The worker is any
+// OpenAI-compatible chat endpoint: a LOCAL model (Ollama / LM Studio) or a
+// hosted one — OR a provider-native model (Anthropic / Gemini / etc.) when
+// AIGENCY_MODEL_EXTRACTION is set without a _URI.
 //
 // Governed by default (STDIO-346): a worker won't fetch the bar itself, so the
 // practices AND capabilities its work is held to must travel with the task. With
@@ -28,13 +23,17 @@ import {
 // prose, so the bar always fits the task in hand. `governed: false` opts out for
 // genuinely throwaway work.
 //
-// The worker call itself takes no new dependency: a plain `fetch` POST to
-// `/chat/completions` (fetch is global in Node >=20). Configuration is env-only,
-// and every failure path returns a clear, actionable message rather than throwing —
-// so a missing or unreachable worker reads as setup guidance, not a crash.
+// The worker call is env-only. Every failure path returns a clear, actionable
+// message rather than throwing — so a missing or unreachable worker reads as
+// setup guidance, not a crash.
+//
+// DEPRECATED: AIGENCY_WORKER_MODEL / AIGENCY_WORKER_URL / AIGENCY_WORKER_API_KEY
+// are aliases for AIGENCY_MODEL_EXTRACTION / AIGENCY_MODEL_EXTRACTION_URI /
+// AIGENCY_MODEL_EXTRACTION_KEY. Both forms work; the AIGENCY_MODEL_EXTRACTION_*
+// vars take precedence.
 
 // Ollama's default OpenAI-compatible base URL — the common local case, so a
-// local user only needs to set AIGENCY_WORKER_MODEL.
+// local user only needs to set AIGENCY_WORKER_MODEL (or AIGENCY_MODEL_EXTRACTION).
 const DEFAULT_WORKER_URL = 'http://localhost:11434/v1';
 
 export interface WorkerConfig {
@@ -43,13 +42,25 @@ export interface WorkerConfig {
   apiKey: string | null;
 }
 
-/** Resolve the worker endpoint from env. URL defaults to Ollama; the model is
- * required; the key is optional (local servers don't need one). */
+/** Resolve the legacy AIGENCY_WORKER_* worker endpoint from env. URL defaults
+ * to Ollama; the model is required; the key is optional (local servers don't
+ * need one). Used for the direct OpenAI-compat fetch path. */
 export function workerConfig(): WorkerConfig {
+  // AIGENCY_MODEL_EXTRACTION_* takes precedence over AIGENCY_WORKER_* (compat aliases).
   return {
-    baseUrl: (process.env.AIGENCY_WORKER_URL?.trim() || DEFAULT_WORKER_URL).replace(/\/+$/, ''),
-    model: process.env.AIGENCY_WORKER_MODEL?.trim() || null,
-    apiKey: process.env.AIGENCY_WORKER_API_KEY?.trim() || null,
+    baseUrl: (
+      process.env.AIGENCY_MODEL_EXTRACTION_URI?.trim() ||
+      process.env.AIGENCY_WORKER_URL?.trim() ||
+      DEFAULT_WORKER_URL
+    ).replace(/\/+$/, ''),
+    model:
+      process.env.AIGENCY_MODEL_EXTRACTION?.trim() ||
+      process.env.AIGENCY_WORKER_MODEL?.trim() ||
+      null,
+    apiKey:
+      process.env.AIGENCY_MODEL_EXTRACTION_KEY?.trim() ||
+      process.env.AIGENCY_WORKER_API_KEY?.trim() ||
+      null,
   };
 }
 
@@ -91,7 +102,7 @@ export async function delegateDetailed(
   },
   provision: (prose: string) => Promise<string> = (prose) =>
     provisionFrame({ prose, autoTag: true }),
-  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel,
+  tier: (t: ModelClass) => Promise<TierChat | null> = tierChat,
   makeReviewer: (artefact?: string) => Promise<Reviewer | null> = reasoningReviewer
 ): Promise<WorkerCall> {
   const startedAt = Date.now();
@@ -110,22 +121,29 @@ export async function delegateDetailed(
   let baseUrl = cfg.baseUrl;
   let apiKey = cfg.apiKey;
   let requested = input.model?.trim() || cfg.model;
+
+  // Whether we resolved through a native adapter (non-URI path). When true we
+  // use the adapter's ChatFn directly; when false we use raw fetch.
+  let nativeTier: TierChat | null = null;
+
   if (!requested) {
-    // No explicit or configured worker — fall back to the extraction-tier model
-    // (AIGENCY_MODEL_EXTRACTION), resolved by family to a real endpoint (STDIO-380).
-    const conn = await tier('extraction');
-    if (conn) {
-      baseUrl = conn.baseUrl;
-      apiKey = conn.apiKey;
-      requested = conn.modelId;
+    // No explicit or configured worker — fall back to the extraction tier,
+    // resolved through the uniform adapter layer (STDIO-467). This now handles
+    // Anthropic / Gemini / etc. where modelConnection() returned null before.
+    const resolved = await tier('extraction');
+    if (resolved) {
+      requested = resolved.modelId;
+      nativeTier = resolved;
     }
   }
   if (!requested) {
+    capSpan.finish();
     return { text: NOT_CONFIGURED, ok: false, model: null, usage: null, elapsedMs: elapsed() };
   }
   // Address a model loosely ("deepseek") or exactly ("DeepSeek-V3.2"); resolve
-  // against what the worker actually serves (cached at registration).
-  const model = resolveWorkerModel(requested, cachedWorkerModels());
+  // against what the worker actually serves (cached at registration). Skip for
+  // native-adapter tiers (the adapter already resolved to the concrete id).
+  const model = nativeTier ? requested : resolveWorkerModel(requested, cachedWorkerModels());
 
   // The bar — and the capabilities — travel with the task: a worker won't fetch them
   // itself. Governed by default, so provision the worker's OWN task and prepend the
@@ -139,7 +157,7 @@ export async function delegateDetailed(
   // default provision binding uses `autoTag` — concern practices are selected in-MCP
   // and the worker gets full bodies, not a pick-list it would ignore (STDIO-348).
   const frame = input.governed !== false ? await provision(input.prompt) : null;
-  const system = [frame, input.system?.trim()].filter(Boolean).join('\n\n') || undefined;
+  const systemText = [frame, input.system?.trim()].filter(Boolean).join('\n\n') || undefined;
   const url = `${baseUrl}/chat/completions`;
 
   // One worker round. The user content varies per call (a verify re-produce
@@ -152,8 +170,51 @@ export async function delegateDetailed(
       traceId: capSpan.traceId,
       parentId: capSpan.spanId,
     });
+
+    // Native-adapter path: use the tier's ChatFn (Anthropic, Gemini, etc.)
+    if (nativeTier) {
+      try {
+        const reply = await nativeTier.chat({
+          systemPrompt: systemText ?? '',
+          turns: [{ role: 'user', content: userContent }],
+        });
+        // Map TokenUsage → PerModelUsage for the meter (same shape as usageFromResponse).
+        const u = reply.usage;
+        const workerUsage =
+          u && (u.inputTokens > 0 || u.outputTokens > 0)
+            ? usageFromResponse(u.model || model, {
+                prompt_tokens: u.inputTokens + u.cacheReadInputTokens,
+                completion_tokens: u.outputTokens,
+                prompt_tokens_details: { cached_tokens: u.cacheReadInputTokens },
+              })
+            : null;
+        if (workerUsage) {
+          const mu = workerUsage[u.model || model];
+          modelSpan.finish({
+            model,
+            tokens_in: mu?.in,
+            tokens_out: mu?.out,
+            cached: mu?.cacheRead,
+          });
+        } else {
+          modelSpan.finish();
+        }
+        return { text: reply.content, ok: true, model, usage: workerUsage, elapsedMs: elapsed() };
+      } catch (err) {
+        modelSpan.finish();
+        return {
+          text: `Could not call the extraction-tier model (${model}): ${String(err).slice(0, 200)}`,
+          ok: false,
+          model,
+          usage: null,
+          elapsedMs: elapsed(),
+        };
+      }
+    }
+
+    // Raw OpenAI-compat fetch path (AIGENCY_WORKER_* / _URI / local Ollama).
     const messages = [
-      ...(system ? [{ role: 'system', content: system }] : []),
+      ...(systemText ? [{ role: 'system', content: systemText }] : []),
       { role: 'user', content: userContent },
     ];
     let res: Response;
@@ -228,7 +289,6 @@ export async function delegateDetailed(
 
   if (!input.verify) {
     const r = await callWorker(input.prompt);
-    // Finish the capability span (non-verify path has no rollup cost).
     capSpan.finish();
     return r;
   }
@@ -265,7 +325,11 @@ export async function delegateDetailed(
 /** The directive for a verify re-produce: the original prompt plus the review's
  * blocking findings, so the worker re-reads its own output and fixes what failed. */
 function withReviewFindings(prompt: string, findings: VerifyFinding[]): string {
-  return `${prompt}\n\n--- your previous output was rejected in an antagonistic review ---\nFix these blocking defects and return the corrected work IN FULL — the task is not done until the review passes:\n\n${formatFindings(findings)}`;
+  return (
+    `${prompt}\n\n--- your previous output was rejected in an antagonistic review ---\n` +
+    `Fix these blocking defects and return the corrected work IN FULL — the task is not done until the review passes:\n\n` +
+    `${formatFindings(findings)}`
+  );
 }
 
 /**
@@ -368,7 +432,10 @@ async function runReviewed(
       // error stamped as approved.
       const outstanding = lastFindings.length ? `\n${formatFindings(lastFindings)}` : '';
       return {
-        text: `${first.text}\n\n— note: the review requested changes but the worker could not be re-run to apply them (${String(err.call.text).slice(0, 120)}); returning the first attempt with the outstanding findings:${outstanding}`,
+        text:
+          `${first.text}\n\n— note: the review requested changes but the worker could not be ` +
+          `re-run to apply them (${String(err.call.text).slice(0, 120)}); returning the first ` +
+          `attempt with the outstanding findings:${outstanding}`,
         ok: true,
         model,
         usage: workerTotal(),
@@ -386,10 +453,9 @@ async function runReviewed(
   }
 }
 
-/** Run a prompt on the configured worker model via its OpenAI-compatible
- * chat-completions endpoint. Returns the assistant text (with an optional meter
- * footer), or a clear, actionable message (never throws) so the coordinator can
- * relay or repair. */
+/** Run a prompt on the configured worker model and return the assistant text
+ * (with an optional meter footer), or a clear, actionable message. Never throws
+ * so the coordinator can relay or repair. */
 export async function delegate(
   input: {
     prompt: string;
@@ -403,7 +469,7 @@ export async function delegate(
   },
   provision: (prose: string) => Promise<string> = (prose) =>
     provisionFrame({ prose, autoTag: true }),
-  tier: (t: ModelClass) => Promise<ModelConnection | null> = tierModel,
+  tier: (t: ModelClass) => Promise<TierChat | null> = tierChat,
   makeReviewer: (artefact?: string) => Promise<Reviewer | null> = reasoningReviewer
 ): Promise<string> {
   const r = await delegateDetailed(input, provision, tier, makeReviewer);
@@ -433,10 +499,6 @@ async function delegateMeterFooter(
   return meterFooter(rounds, mode, { timing: { totalMs: elapsedMs } });
 }
 
-/** A host-aware one-liner for the `delegate` description: whether a worker is
- * configured and where, so a coordinator can see the actual target rather than
- * guessing — the worker is any OpenAI-compatible endpoint, defaulting to a local
- * Ollama at 11434 when unset (STDIO-377). */
 /** Fetch the model ids the worker advertises via its OpenAI-compatible
  * `GET /models`, or null when unreachable / none. Lets `delegate`'s description
  * list what the worker can actually run, so a coordinator told "use deepseek"
@@ -502,9 +564,11 @@ export async function workerSummary(
   const cfg = workerConfig();
   if (!cfg.model) {
     return (
-      `No worker is configured on this host: set AIGENCY_WORKER_MODEL, and AIGENCY_WORKER_URL for a ` +
-      `non-local endpoint (default is local Ollama at ${DEFAULT_WORKER_URL}). The worker is any ` +
-      `OpenAI-compatible endpoint — local (Ollama / LM Studio / vLLM) or hosted (e.g. DeepSeek, SambaNova).`
+      `No worker is configured on this host: set AIGENCY_WORKER_MODEL (or AIGENCY_MODEL_EXTRACTION), ` +
+      `and AIGENCY_WORKER_URL (or AIGENCY_MODEL_EXTRACTION_URI) for a non-local endpoint (default is ` +
+      `local Ollama at ${DEFAULT_WORKER_URL}). The worker is any OpenAI-compatible endpoint — local ` +
+      `(Ollama / LM Studio / vLLM) or hosted (e.g. DeepSeek, SambaNova) — or a provider-native ` +
+      `model (e.g. AIGENCY_MODEL_EXTRACTION=haiku with ANTHROPIC_API_KEY).`
     );
   }
   const models = await fetchModels(cfg);
