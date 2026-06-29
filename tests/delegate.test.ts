@@ -11,7 +11,25 @@ import {
 import { roundUsage } from '../src/metering.js';
 import type { Reviewer } from '../src/tools/review.js';
 
-const ENV = ['AIGENCY_WORKER_URL', 'AIGENCY_WORKER_MODEL', 'AIGENCY_WORKER_API_KEY'];
+const ENV = [
+  'AIGENCY_WORKER_URL',
+  'AIGENCY_WORKER_MODEL',
+  'AIGENCY_WORKER_API_KEY',
+  // Post-467 the worker IS the extraction tier, so "no worker configured" means
+  // none of these set AND no provider serving the default (haiku). The extraction-tier
+  // vars and the provider keys must be isolated too — otherwise a real env with provider
+  // keys present makes a worker resolvable and the "no worker" assertions flip.
+  'AIGENCY_MODEL_EXTRACTION',
+  'AIGENCY_MODEL_EXTRACTION_URI',
+  'AIGENCY_MODEL_EXTRACTION_KEY',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'SAMBA_NOVA_API_KEY',
+  'MISTRAL_API_KEY',
+];
 const saved: Record<string, string | undefined> = {};
 for (const k of ENV) saved[k] = process.env[k];
 
