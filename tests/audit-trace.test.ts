@@ -28,7 +28,10 @@ interface ChromeTraceEvent {
   args?: Record<string, unknown>;
 }
 
-function toChromeTrace(spans: AuditSpan[]): { traceEvents: ChromeTraceEvent[] } {
+function toChromeTrace(
+  spans: AuditSpan[],
+  opts: { elideNotes?: boolean } = {}
+): { traceEvents: ChromeTraceEvent[] } {
   const traceEvents: ChromeTraceEvent[] = spans.map((s) => {
     const startMs = Date.parse(s.start);
     const pid = hashPid(s.trace_id);
@@ -38,7 +41,12 @@ function toChromeTrace(spans: AuditSpan[]): { traceEvents: ChromeTraceEvent[] } 
       ...(s.parent_span_id ? { parent_span_id: s.parent_span_id } : {}),
       ...(s.attributes ?? {}),
     };
-    return { name: s.name, ph: 'X', ts: startMs * 1000, dur: s.duration_ms * 1000, pid, tid, args };
+    if (!opts.elideNotes) {
+      if (s.note) args['note'] = s.note;
+      if (s.purpose) args['purpose'] = s.purpose;
+    }
+    const name = !opts.elideNotes && s.note ? `${s.name} → ${s.note}` : s.name;
+    return { name, ph: 'X', ts: startMs * 1000, dur: s.duration_ms * 1000, pid, tid, args };
   });
   return { traceEvents };
 }
@@ -49,13 +57,17 @@ function uuidToHex(uuid: string): string {
 
 const OTLP_KIND: Record<string, number> = { tool: 3, capability: 1, model: 3 };
 
-function toOtlp(spans: AuditSpan[]): unknown {
+function toOtlp(spans: AuditSpan[], opts: { elideNotes?: boolean } = {}): unknown {
   const otlpSpans = spans.map((s) => {
     const startNs = BigInt(Date.parse(s.start)) * BigInt(1_000_000);
     const endNs = startNs + BigInt(s.duration_ms) * BigInt(1_000_000);
     const attrs: Array<{ key: string; value: { stringValue?: string; intValue?: string } }> = [
       { key: 'span.kind.label', value: { stringValue: s.kind } },
     ];
+    if (!opts.elideNotes) {
+      if (s.note) attrs.push({ key: 'note', value: { stringValue: s.note } });
+      if (s.purpose) attrs.push({ key: 'purpose', value: { stringValue: s.purpose } });
+    }
     if (s.attributes) {
       for (const [k, v] of Object.entries(s.attributes)) {
         if (v === undefined || v === null) continue;
@@ -112,6 +124,12 @@ const SAMPLE_CHILD: AuditSpan = {
   end: '2026-06-27T10:00:01.400Z',
   duration_ms: 1300,
   attributes: { model: 'DeepSeek-V3.2', tokens_in: 500, tokens_out: 200, cached: 100 },
+};
+
+const SAMPLE_NOTED: AuditSpan = {
+  ...SAMPLE_SPAN,
+  note: 'src/auth/login.ts',
+  purpose: 'STDIO-489',
 };
 
 // ── Chrome Trace ──────────────────────────────────────────────────────────────
@@ -173,9 +191,54 @@ describe('toChromeTrace', () => {
     const [b] = toChromeTrace([{ ...SAMPLE_SPAN, span_id: 'x' }]).traceEvents;
     expect(a.pid).toBe(b.pid);
   });
+
+  // STDIO-489: note and purpose
+  it('enriches the frame name with the note when present', () => {
+    const [ev] = toChromeTrace([SAMPLE_NOTED]).traceEvents;
+    expect(ev.name).toBe('tool:delegate → src/auth/login.ts');
+  });
+
+  it('note and purpose appear in args when present', () => {
+    const [ev] = toChromeTrace([SAMPLE_NOTED]).traceEvents;
+    expect(ev.args?.note).toBe('src/auth/login.ts');
+    expect(ev.args?.purpose).toBe('STDIO-489');
+  });
+
+  it('frame name is the plain span name when note is absent', () => {
+    const [ev] = toChromeTrace([SAMPLE_SPAN]).traceEvents;
+    expect(ev.name).toBe('tool:delegate');
+    expect(ev.args?.note).toBeUndefined();
+  });
+
+  it('elideNotes suppresses note from the frame name', () => {
+    const [ev] = toChromeTrace([SAMPLE_NOTED], { elideNotes: true }).traceEvents;
+    expect(ev.name).toBe('tool:delegate');
+    expect(ev.args?.note).toBeUndefined();
+    expect(ev.args?.purpose).toBeUndefined();
+  });
 });
 
 // ── OTLP ─────────────────────────────────────────────────────────────────────
+
+type OtlpOutput = {
+  resourceSpans: [
+    {
+      resource: {
+        attributes: Array<{ key: string; value: { stringValue?: string; intValue?: string } }>;
+      };
+      scopeSpans: [
+        {
+          spans: Array<{
+            traceId: string;
+            parentSpanId?: string;
+            name: string;
+            attributes: Array<{ key: string; value: { stringValue?: string; intValue?: string } }>;
+          }>;
+        },
+      ];
+    },
+  ];
+};
 
 describe('toOtlp', () => {
   it('returns an OTLP structure with resourceSpans', () => {
@@ -184,54 +247,67 @@ describe('toOtlp', () => {
   });
 
   it('traceId is the UUID with hyphens stripped', () => {
-    const out = toOtlp([SAMPLE_SPAN]) as {
-      resourceSpans: [{ scopeSpans: [{ spans: [{ traceId: string }] }] }];
-    };
+    const out = toOtlp([SAMPLE_SPAN]) as OtlpOutput;
     expect(out.resourceSpans[0].scopeSpans[0].spans[0].traceId).toBe(
       'aaaaaaaa000000000000bbbbbbbbbbbb'
     );
   });
 
   it('parentSpanId is present and 16 hex chars when parent_span_id was set', () => {
-    const out = toOtlp([SAMPLE_CHILD]) as {
-      resourceSpans: [{ scopeSpans: [{ spans: [{ parentSpanId?: string }] }] }];
-    };
+    const out = toOtlp([SAMPLE_CHILD]) as OtlpOutput;
     const parentSpanId = out.resourceSpans[0].scopeSpans[0].spans[0].parentSpanId;
     expect(parentSpanId).toBeDefined();
     expect(parentSpanId).toHaveLength(16);
   });
 
   it('spans with no parent_span_id omit parentSpanId', () => {
-    const out = toOtlp([SAMPLE_SPAN]) as {
-      resourceSpans: [{ scopeSpans: [{ spans: [{ parentSpanId?: string }] }] }];
-    };
+    const out = toOtlp([SAMPLE_SPAN]) as OtlpOutput;
     expect(out.resourceSpans[0].scopeSpans[0].spans[0].parentSpanId).toBeUndefined();
   });
 
   it('service.name resource attribute is verevoir-mcp', () => {
-    const out = toOtlp([SAMPLE_SPAN]) as {
-      resourceSpans: [
-        { resource: { attributes: Array<{ key: string; value: { stringValue: string } }> } },
-      ];
-    };
+    const out = toOtlp([SAMPLE_SPAN]) as OtlpOutput;
     const attr = out.resourceSpans[0].resource.attributes.find((a) => a.key === 'service.name');
     expect(attr?.value?.stringValue).toBe('verevoir-mcp');
   });
 
   it('numeric attributes become intValue strings', () => {
-    const out = toOtlp([SAMPLE_CHILD]) as {
-      resourceSpans: [
-        {
-          scopeSpans: [
-            { spans: [{ attributes: Array<{ key: string; value: { intValue?: string } }> }] },
-          ];
-        },
-      ];
-    };
+    const out = toOtlp([SAMPLE_CHILD]) as OtlpOutput;
     const attr = out.resourceSpans[0].scopeSpans[0].spans[0].attributes.find(
       (a) => a.key === 'tokens_in'
     );
     expect(attr?.value?.intValue).toBe('500');
+  });
+
+  // STDIO-489: note and purpose
+  it('note appears as a string OTLP attribute when present', () => {
+    const out = toOtlp([SAMPLE_NOTED]) as OtlpOutput;
+    const attr = out.resourceSpans[0].scopeSpans[0].spans[0].attributes.find(
+      (a) => a.key === 'note'
+    );
+    expect(attr?.value?.stringValue).toBe('src/auth/login.ts');
+  });
+
+  it('purpose appears as a string OTLP attribute when present', () => {
+    const out = toOtlp([SAMPLE_NOTED]) as OtlpOutput;
+    const attr = out.resourceSpans[0].scopeSpans[0].spans[0].attributes.find(
+      (a) => a.key === 'purpose'
+    );
+    expect(attr?.value?.stringValue).toBe('STDIO-489');
+  });
+
+  it('note and purpose are absent from OTLP attributes when span has none', () => {
+    const out = toOtlp([SAMPLE_SPAN]) as OtlpOutput;
+    const attrs = out.resourceSpans[0].scopeSpans[0].spans[0].attributes;
+    expect(attrs.find((a) => a.key === 'note')).toBeUndefined();
+    expect(attrs.find((a) => a.key === 'purpose')).toBeUndefined();
+  });
+
+  it('elideNotes suppresses note and purpose from OTLP attributes', () => {
+    const out = toOtlp([SAMPLE_NOTED], { elideNotes: true }) as OtlpOutput;
+    const attrs = out.resourceSpans[0].scopeSpans[0].spans[0].attributes;
+    expect(attrs.find((a) => a.key === 'note')).toBeUndefined();
+    expect(attrs.find((a) => a.key === 'purpose')).toBeUndefined();
   });
 });
 

@@ -7,7 +7,7 @@ import { delegate, delegateDetailed } from './delegate.js';
 import { provisionFrame } from './provision.js';
 import { warmRegistry } from '../registry.js';
 import { meterFooter, resolveMeterMode, type MeterMode } from '../metering.js';
-import { openSpan, childContext, type SpanContext } from '../audit.js';
+import { openSpan, childContext, deriveNote, type SpanContext } from '../audit.js';
 import {
   deterministicEval,
   modelJudgeEval,
@@ -305,6 +305,7 @@ export async function runRefine(
   const capSpan = openSpan('refine', 'capability', {
     traceId: input.spanCtx?.traceId,
     parentId: input.spanCtx?.parentId,
+    purpose: input.spanCtx?.purpose,
   });
   const step = makeRefineStep(input.task, input.model, stepCall, undefined, meter.record);
   meter.start();
@@ -345,6 +346,7 @@ export async function runLoopSearch(
   const capSpan = openSpan('search', 'capability', {
     traceId: input.spanCtx?.traceId,
     parentId: input.spanCtx?.parentId,
+    purpose: input.spanCtx?.purpose,
   });
   const makeStep = (seed: string) =>
     makeRefineStep(input.task, input.model, stepCall, seed, meter.record);
@@ -552,7 +554,9 @@ export function registerLoopTools(server: McpServer): void {
     async ({ task, eval: evalChoice, stop, model, meter }) => {
       // Open a tool span now (synchronous handle return); the refine loop
       // runs in the background and its capability span carries the trace_id.
-      const toolSpan = openSpan('tool:refine_start', 'tool');
+      const toolSpan = openSpan('tool:refine_start', 'tool', {
+        note: deriveNote('refine_start', { task }),
+      });
       const job = startRefine({
         task,
         eval: evalChoice as EvalChoice,
@@ -623,7 +627,9 @@ export function registerLoopTools(server: McpServer): void {
       },
     },
     async ({ task, eval: evalChoice, stop, model, seeds, seedCount, concurrency, meter }) => {
-      const toolSpan = openSpan('tool:search_start', 'tool');
+      const toolSpan = openSpan('tool:search_start', 'tool', {
+        note: deriveNote('search_start', { task }),
+      });
       const job = startLoopSearch({
         task,
         eval: evalChoice as EvalChoice,

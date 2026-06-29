@@ -11,7 +11,7 @@ import {
   type TokenUsage,
   type PerModelUsage,
 } from '@verevoir/llm';
-import { openSpan, childContext, type SpanContext } from '../audit.js';
+import { openSpan, childContext, deriveNote, type SpanContext } from '../audit.js';
 import { runWithVerify, formatFindings, type VerifyFinding } from '@verevoir/recipes/engine';
 import { reasoningReviewer, type Reviewer } from './review.js';
 import { meterFooter, resolveMeterMode, roundUsage, type MeterMode } from '../metering.js';
@@ -308,6 +308,7 @@ export async function dispatchTask(
   const capSpan = openSpan('dispatch', 'capability', {
     traceId: input.spanCtx?.traceId,
     parentId: input.spanCtx?.parentId,
+    purpose: input.spanCtx?.purpose,
   });
   const capCtx = childContext(capSpan);
 
@@ -698,7 +699,9 @@ export function registerDispatchTool(server: McpServer): void {
           ).catch(() => {});
         }
       };
-      const toolSpan = openSpan('tool:dispatch', 'tool');
+      const toolSpan = openSpan('tool:dispatch', 'tool', {
+        note: deriveNote('dispatch', { prompt }),
+      });
       const text = await dispatchTask(
         {
           prompt,
@@ -707,7 +710,11 @@ export function registerDispatchTool(server: McpServer): void {
           maxIterations,
           verify,
           meter,
-          spanCtx: { traceId: toolSpan.traceId, parentId: toolSpan.spanId },
+          spanCtx: {
+            traceId: toolSpan.traceId,
+            parentId: toolSpan.spanId,
+            purpose: toolSpan.purpose,
+          },
         },
         { onProgress }
       );
