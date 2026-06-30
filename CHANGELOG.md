@@ -2,7 +2,7 @@
 
 ## 0.65.0 — 2026-06-30
 
-- **Steer sessions to governed delegation for bulk work** (STDIO-508). The injected doctrine (`instructions.md`) gains a **"handing off work"** section: for mechanical or bulk work (scaffolding, boilerplate, repetitive writing, wide read-and-summarise), prefer `delegate` / `dispatch` over doing it inline or spawning a same-tier sub-agent of your own — they route to a **cheaper tier** *and* **carry the provisioned bar** into the worker, whereas a self-spawned sub-agent inherits the coordinator's tier and has no standard attached. Substrate-carried, so it steers every connected session without a per-prompt nudge. (Stacks after 0.64.0 / PR #96 — whichever merges second rebases the CHANGELOG.)
+- **Steer sessions to governed delegation for bulk work** (STDIO-508). The injected doctrine (`instructions.md`) gains a **"handing off work"** section: for mechanical or bulk work (scaffolding, boilerplate, repetitive writing, wide read-and-summarise), prefer `delegate` / `dispatch` over doing it inline or spawning a same-tier sub-agent of your own — they route to a **cheaper tier** _and_ **carry the provisioned bar** into the worker, whereas a self-spawned sub-agent inherits the coordinator's tier and has no standard attached. Substrate-carried, so it steers every connected session without a per-prompt nudge. (Stacks after 0.64.0 / PR #96 — whichever merges second rebases the CHANGELOG.)
 
 ## 0.63.0 — 2026-06-30
 
