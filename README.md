@@ -348,6 +348,42 @@ Pass `--otlp` to emit OTLP-JSON instead (for Jaeger / Tempo / any OpenTelemetry 
 
 **How to reconstruct the cascade.** Spans in a single session share a `trace_id`. A span whose `parent_span_id` matches another span's `span_id` is its child. The typical shape is: a `tool` span (the MCP handler) → a `capability` span (the full `delegate` / `dispatch` run) → one or more `model` spans (each LLM call). The converter builds the flame chart from this nesting automatically.
 
+### Live OTLP export — one collector for a whole session (incl. Claude Code)
+
+The `verevoir-audit-trace` bin above is the **post-hoc** path (a finished JSONL → a file). For a **live** trace — and to unify the MCP's spans with **Claude Code's own** turns, tools, and token usage in a single view — set the standard OpenTelemetry endpoint and each span is **also** POSTed to the collector as it finishes, alongside the local JSONL:
+
+| Variable                      | Effect                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | When set (and `AIGENCY_AUDIT` ≠ `off`), POST each span to `<endpoint>/v1/traces`. Unset → local JSONL only. |
+
+Because it's the **standard** OTel env, the same endpoint unifies every source: the MCP, **Claude Code** (`CLAUDE_CODE_ENABLE_TELEMETRY=1` + the same `OTEL_EXPORTER_OTLP_ENDPOINT`), and the aigency executor all land in one trace. The export is **fire-and-forget and fail-soft** — a slow or unreachable collector never blocks a tool or changes a result.
+
+**Audit a session, then throw the collector away** — no standing infrastructure:
+
+```bash
+# 1. a throwaway collector that streams everything to one file
+cat > /tmp/otelcol.yaml <<'YAML'
+receivers: { otlp: { protocols: { http: { endpoint: 0.0.0.0:4318 } } } }
+exporters: { file: { path: /trace/session.json } }
+service: { pipelines: { traces: { receivers: [otlp], exporters: [file] } } }
+YAML
+docker run --rm -d --name otelcol -p 4318:4318 \
+  -v /tmp/otelcol.yaml:/etc/otelcol/config.yaml -v /tmp:/trace \
+  otel/opentelemetry-collector:latest
+
+# 2. point the session at it and run
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export AIGENCY_AUDIT=verbose
+export CLAUDE_CODE_ENABLE_TELEMETRY=1   # Claude Code's own turns/tools/tokens too
+
+#    … run your session …
+
+# 3. tear down — the unified trace is in /tmp/session.json (OTLP JSON)
+docker rm -f otelcol
+```
+
+The MCP's file `--otlp` output and this live stream share one mapping (`src/otlp.ts`), so the two are byte-identical in shape.
+
 ## Board card sync (CI)
 
 The `card-sync` workflow moves a PR's work-tracker card through the board from the PR lifecycle — **opened → "In preview"**, **merged → "Done"** — keyed off the `<Namespace>-<id>` work-item id in the branch (STDIO-236). Deterministic and best-effort: an unknown card or missing config is logged and **never blocks the merge**.

@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { otlpEnvelope, auditSpanToOtlp } from './otlp.js';
 
 // AUDIT LOG (STDIO-486) — per-session JSONL file, OpenTelemetry-shaped spans.
 //
@@ -172,6 +173,11 @@ export interface AuditConfig {
   mode: AuditMode;
   dir: string;
   sessionGapMs: number;
+  /** OTLP collector endpoint (OTEL_EXPORTER_OTLP_ENDPOINT). When set and mode
+   * is not 'off', each span is ALSO POSTed live to `<endpoint>/v1/traces`
+   * (STDIO-502) — the unified-trace path, alongside the local JSONL. Null =
+   * JSONL only. */
+  otlpEndpoint?: string | null;
 }
 
 /** Resolve audit config from env. Safe to call at module load — reads process.env
@@ -182,7 +188,10 @@ export function resolveAuditConfig(): AuditConfig {
   const dir = process.env.AIGENCY_AUDIT_DIR?.trim() || './aigency-audit';
   const gapRaw = Number(process.env.AIGENCY_AUDIT_SESSION_GAP ?? '');
   const sessionGapMs = Number.isFinite(gapRaw) && gapRaw > 0 ? gapRaw * 1000 : 120_000;
-  return { mode, dir, sessionGapMs };
+  // The standard OTel env, so the MCP, Claude Code, and the executor can all be
+  // pointed at one collector with a single variable (STDIO-502).
+  const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() || null;
+  return { mode, dir, sessionGapMs, otlpEndpoint };
 }
 
 // ── Session state ─────────────────────────────────────────────────────────────
@@ -255,6 +264,27 @@ export function resetAudit(cfg?: AuditConfig): void {
  * the write fails (best-effort: audit must never interfere with tool results).
  * The directory is created lazily here, not in sessionFile(), so a bad dir
  * is caught and silently dropped rather than surfaced as an error mid-tool. */
+/** Live OTLP export (STDIO-502) — when OTEL_EXPORTER_OTLP_ENDPOINT is set, POST
+ * the span to the collector at `<endpoint>/v1/traces`. Fire-and-forget +
+ * fail-soft: a slow/unreachable collector must never block a tool or throw into
+ * its result path (the same best-effort contract as the JSONL write). */
+function exportSpanOtlp(span: AuditSpan): void {
+  const endpoint = config().otlpEndpoint;
+  if (!endpoint) return;
+  try {
+    const body = JSON.stringify(otlpEnvelope([auditSpanToOtlp(span)]));
+    void fetch(`${endpoint.replace(/\/+$/, '')}/v1/traces`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    }).catch(() => {
+      // collector down / unreachable → drop silently
+    });
+  } catch {
+    // best-effort: never let export break the tool path
+  }
+}
+
 export function appendSpan(span: AuditSpan): void {
   const file = sessionFile();
   if (!file) return;
@@ -266,6 +296,9 @@ export function appendSpan(span: AuditSpan): void {
     // Silently drop: a permissions issue or a full disk must not surface as a
     // tool error — the audit log is observability, not the main path.
   }
+  // Live OTLP stream (STDIO-502): additive to the JSONL, fires only when an
+  // OTLP endpoint is configured. Fire-and-forget; never blocks the tool path.
+  exportSpanOtlp(span);
 }
 
 // ── Span builder ──────────────────────────────────────────────────────────────
