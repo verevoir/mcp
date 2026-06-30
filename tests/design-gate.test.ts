@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   localDesignToolingDir,
   extractTokenJson,
@@ -13,17 +16,27 @@ describe('localDesignToolingDir', () => {
     expect(localDesignToolingDir('git@github.com:verevoir/aigency-guardrails.git')).toBeNull();
   });
 
-  it('returns the real corpus dir for the local checkout', () => {
-    // The actual guardrails clone in this repo holds tooling/design.
-    const dir = localDesignToolingDir(
-      '/Users/adamsurgenor/Projects/Home/agency/projects/aigency-guardrails'
+  it('returns the dir for a local checkout that holds the design tooling', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dg-has-'));
+    tmpDirs.push(root);
+    mkdirSync(join(root, 'tooling', 'design'), { recursive: true });
+    writeFileSync(
+      join(root, 'tooling', 'design', 'verify-pack.mjs'),
+      'export const verifyFiles=()=>({});'
     );
-    expect(dir).toBe('/Users/adamsurgenor/Projects/Home/agency/projects/aigency-guardrails');
+    expect(localDesignToolingDir(root)).toBe(root);
   });
 
-  it('returns null for a local path with no design tooling', () => {
-    expect(localDesignToolingDir('/tmp/definitely-not-a-corpus-xyz')).toBeNull();
+  it('returns null for a local dir with no design tooling', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dg-bare-'));
+    tmpDirs.push(root);
+    expect(localDesignToolingDir(root)).toBeNull();
   });
+});
+
+const tmpDirs: string[] = [];
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
 describe('extractTokenJson', () => {
