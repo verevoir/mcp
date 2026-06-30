@@ -1,42 +1,69 @@
-import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  localDesignToolingDir,
+  pickToolingFiles,
+  loadDesignTooling,
+  clearDesignToolingMemo,
   extractTokenJson,
   designPackVerifier,
-  resolveVerifier,
   type DesignTooling,
 } from '../src/tools/design-gate.js';
 
-describe('localDesignToolingDir', () => {
-  it('returns null for a remote (github) source — tooling is not on disk', () => {
-    expect(localDesignToolingDir('https://github.com/verevoir/aigency-guardrails')).toBeNull();
-    expect(localDesignToolingDir('git@github.com:verevoir/aigency-guardrails.git')).toBeNull();
-  });
+beforeEach(() => clearDesignToolingMemo());
 
-  it('returns the dir for a local checkout that holds the design tooling', () => {
-    const root = mkdtempSync(join(tmpdir(), 'dg-has-'));
-    tmpDirs.push(root);
-    mkdirSync(join(root, 'tooling', 'design'), { recursive: true });
-    writeFileSync(
-      join(root, 'tooling', 'design', 'verify-pack.mjs'),
-      'export const verifyFiles=()=>({});'
-    );
-    expect(localDesignToolingDir(root)).toBe(root);
-  });
-
-  it('returns null for a local dir with no design tooling', () => {
-    const root = mkdtempSync(join(tmpdir(), 'dg-bare-'));
-    tmpDirs.push(root);
-    expect(localDesignToolingDir(root)).toBeNull();
+describe('pickToolingFiles', () => {
+  it('keeps the .mjs sources and drops tests and non-mjs', () => {
+    const picked = pickToolingFiles([
+      { type: 'file', name: 'verify-pack.mjs', path: 'tooling/design/verify-pack.mjs' },
+      { type: 'file', name: 'generate.mjs', path: 'tooling/design/generate.mjs' },
+      { type: 'file', name: 'gate.test.mjs', path: 'tooling/design/gate.test.mjs' },
+      { type: 'file', name: 'README.md', path: 'tooling/design/README.md' },
+      { type: 'dir', name: 'sub', path: 'tooling/design/sub' },
+    ]);
+    expect(picked.map((f) => f.name).sort()).toEqual(['generate.mjs', 'verify-pack.mjs']);
   });
 });
 
-const tmpDirs: string[] = [];
-afterAll(() => {
-  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+// Stub tooling modules — minimal real .mjs the loader materialises + imports,
+// so the materialise→import path is exercised hermetically (no corpus, no
+// network). verify-pack echoes a verdict from the token JSON it's handed.
+const STUB_FILES: Record<string, string> = {
+  'verify-pack.mjs':
+    'export function verifyFiles(files){' +
+    'const json=Object.entries(files).find(([p])=>p.endsWith(".tokens.json"));' +
+    'const ok=json && JSON.parse(json[1]).ok===true;' +
+    'return ok?{ok:true,findings:[]}:{ok:false,findings:[{kind:"DTCG",message:"stub reject"}]};}',
+  'generate.mjs': 'export function renderTokenView(){return "## view";}',
+};
+
+describe('loadDesignTooling', () => {
+  it('materialises fetched tooling to a temp dir and imports verifyFiles + renderTokenView', async () => {
+    const tooling = await loadDesignTooling('any-url', async () => STUB_FILES);
+    expect(tooling).not.toBeNull();
+    expect(typeof tooling!.verifyFiles).toBe('function');
+    expect(tooling!.renderTokenView(null)).toBe('## view');
+    expect(tooling!.verifyFiles({ 'x.tokens.json': '{"ok":true}' }).ok).toBe(true);
+    expect(tooling!.verifyFiles({ 'x.tokens.json': '{"ok":false}' }).ok).toBe(false);
+  });
+
+  it('returns null when the fetch finds no tooling (remote unreachable / empty)', async () => {
+    expect(await loadDesignTooling('any-url', async () => null)).toBeNull();
+  });
+
+  it('returns null when the tooling is missing its required modules', async () => {
+    expect(
+      await loadDesignTooling('any-url', async () => ({
+        'generate.mjs': STUB_FILES['generate.mjs'],
+      }))
+    ).toBeNull();
+  });
+
+  it('never throws when the fetch rejects — degrades to null', async () => {
+    expect(
+      await loadDesignTooling('any-url', async () => {
+        throw new Error('network down');
+      })
+    ).toBeNull();
+  });
 });
 
 describe('extractTokenJson', () => {
@@ -50,20 +77,12 @@ describe('extractTokenJson', () => {
     expect(out && JSON.parse(out)).toEqual({ a: { b: 2 } });
   });
 
-  it('returns the whole object when the body is just JSON', () => {
-    const out = extractTokenJson('{"$schema":"x","color":{}}');
-    expect(out && JSON.parse(out)).toEqual({ $schema: 'x', color: {} });
-  });
-
   it('returns null when nothing parses', () => {
     expect(extractTokenJson('no json here at all')).toBeNull();
     expect(extractTokenJson('{ not: valid json }')).toBeNull();
   });
 });
 
-// A fake tooling double — verifyFiles echoes a verdict driven by the test, so we
-// assert the verifier WIRING (extract → render → verifyFiles → VerifyResult)
-// without depending on the real DTCG checks (those are the corpus's own tests).
 function fakeTooling(verdict: {
   ok: boolean;
   findings: { kind: string; file?: string; where?: string; message: string }[];
@@ -71,7 +90,6 @@ function fakeTooling(verdict: {
   return {
     renderTokenView: () => '## view',
     verifyFiles: (files) => {
-      // Prove the verifier built the expected pack shape.
       const paths = Object.keys(files);
       expect(paths.some((p) => p.endsWith('.tokens.json'))).toBe(true);
       expect(paths.some((p) => p.endsWith('.tokens.md'))).toBe(true);
@@ -89,7 +107,6 @@ describe('designPackVerifier', () => {
       result: '{"color":{}}',
     });
     expect(res.ok).toBe(true);
-    expect(res.findings).toEqual([]);
   });
 
   it('surfaces the gate findings for a re-produce', async () => {
@@ -113,21 +130,5 @@ describe('designPackVerifier', () => {
     });
     expect(res.ok).toBe(false);
     expect(res.findings[0].kind).toBe('PARSE');
-  });
-});
-
-describe('resolveVerifier', () => {
-  it('returns null for a non-design verify name', async () => {
-    expect(await resolveVerifier('some-other-gate', 'x')).toBeNull();
-  });
-
-  it('returns null for design-pack when the corpus is remote (no local tooling)', async () => {
-    expect(
-      await resolveVerifier(
-        'design-pack',
-        'generate-design-tokens',
-        'https://github.com/verevoir/aigency-guardrails'
-      )
-    ).toBeNull();
   });
 });

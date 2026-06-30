@@ -1,9 +1,11 @@
-import { existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { Verifier } from '@verevoir/recipes/engine';
+import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 
-// STDIO-507 — the MCP runs a capability's own declared gate.
+// STDIO-507 / STDIO-510 — the MCP runs a capability's own declared gate.
 //
 // `enact_capability` produces a gated capability on the worker tier, but a
 // produce that is only practices-reviewed doesn't ENFORCE the deterministic
@@ -14,31 +16,18 @@ import type { Verifier } from '@verevoir/recipes/engine';
 // runs as a hard postcondition and the worker is looped on its findings. It runs
 // the one zero-dependency source in the corpus, not a second copy — the same
 // gate aigency-web runs.
+//
+// STDIO-510: the tooling is read through the SAME source adapter the corpus
+// itself is read through (`@verevoir/sources` via router), so the gate fires
+// whether the corpus is a local checkout OR a remote (github / notion) source —
+// not just a local clone. The zero-dependency `.mjs` files are materialised to a
+// temp dir and dynamically imported (their cross-file imports resolve as
+// siblings there).
 
 const DEFAULT_GUARDRAILS_URL = 'https://github.com/verevoir/aigency-guardrails';
 
 function guardrailsUrl(): string {
   return process.env.AIGENCY_GUARDRAILS_URL?.trim() || DEFAULT_GUARDRAILS_URL;
-}
-
-/** Resolve the guardrails corpus to a local directory that holds the design
- * tooling, or null when it isn't a local checkout (a remote source — fetching
- * its tooling to a temp dir is a follow-up; the caller falls back to the
- * practices review). Never throws. */
-export function localDesignToolingDir(url: string = guardrailsUrl()): string | null {
-  let p = url.trim();
-  if (!p) return null;
-  if (p.startsWith('file://')) {
-    try {
-      p = fileURLToPath(p);
-    } catch {
-      return null;
-    }
-  } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p) || p.includes('github.com')) {
-    return null; // a remote source — not on disk
-  }
-  const dir = resolve(p);
-  return existsSync(join(dir, 'tooling', 'design', 'verify-pack.mjs')) ? dir : null;
 }
 
 /** The slice of the corpus's design tooling enact needs: the pure in-memory
@@ -51,6 +40,56 @@ export interface DesignTooling {
   renderTokenView: (tokens: unknown) => string;
 }
 
+const TOOLING_DIR = 'tooling/design';
+
+/** Pick the runnable design-tooling modules from a directory listing: the
+ * zero-dependency `.mjs` sources, excluding tests. Pure — the filtering rule in
+ * one testable place. */
+export function pickToolingFiles(entries: { type: string; name: string; path: string }[]): {
+  name: string;
+  path: string;
+}[] {
+  return entries
+    .filter((e) => e.type === 'file' && e.name.endsWith('.mjs') && !e.name.endsWith('.test.mjs'))
+    .map((e) => ({ name: e.name, path: e.path }));
+}
+
+/** Read the design tooling `.mjs` sources from the corpus via the source adapter
+ * (local or remote), as a `{ filename → content }` map. Null when the corpus is
+ * unreachable or holds no tooling. Never throws. The whole `tooling/design`
+ * directory is read so the inter-file imports (`verify-pack` → `dtcg` /
+ * `generate` / `gate` …) resolve once materialised as siblings. */
+export async function fetchDesignToolingFiles(
+  url: string = guardrailsUrl()
+): Promise<Record<string, string> | null> {
+  let adapter: Awaited<ReturnType<typeof pickSourceAdapter>>;
+  let env: ReturnType<typeof resolveSourceEnv>;
+  try {
+    adapter = await pickSourceAdapter(url);
+    env = resolveSourceEnv(url);
+  } catch {
+    return null;
+  }
+  let entries: { type: string; name: string; path: string }[];
+  try {
+    entries = (await adapter.listFiles(env, url, TOOLING_DIR)) as typeof entries;
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(entries)) return null;
+  const files: Record<string, string> = {};
+  for (const f of pickToolingFiles(entries)) {
+    try {
+      const { content } = await adapter.readFile(env, url, f.path);
+      files[f.name] = content;
+    } catch {
+      // skip an unreadable file — a missing dependency surfaces at import time
+      // as a null tooling (honest "not runnable"), never a throw.
+    }
+  }
+  return Object.keys(files).length > 0 ? files : null;
+}
+
 let toolingMemo: DesignTooling | null | undefined;
 
 /** Test seam: drop the loaded-tooling memo. */
@@ -58,33 +97,44 @@ export function clearDesignToolingMemo(): void {
   toolingMemo = undefined;
 }
 
-/** Dynamically load the corpus's zero-dependency design tooling (`verifyFiles` +
- * `renderTokenView`), memoised for the process. Null when the corpus isn't a
- * local checkout or the tooling can't be loaded — never throws, so a missing
- * gate degrades to "not runnable here" rather than crashing enact. */
-export async function loadDesignTooling(
-  url: string = guardrailsUrl()
-): Promise<DesignTooling | null> {
-  if (toolingMemo !== undefined) return toolingMemo;
-  const dir = localDesignToolingDir(url);
-  if (!dir) {
-    toolingMemo = null;
+/** Materialise a `{ filename → content }` tooling map to a fresh temp dir and
+ * dynamically import `verify-pack.mjs` + `generate.mjs` from it. Null when the
+ * map lacks them or the import fails. The temp dir persists for the process
+ * (the imported modules reference it). */
+async function importTooling(files: Record<string, string>): Promise<DesignTooling | null> {
+  if (!files['verify-pack.mjs'] || !files['generate.mjs']) return null;
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'design-tooling-'));
+    for (const [name, content] of Object.entries(files)) {
+      writeFileSync(join(dir, name), content);
+    }
+    const vp = (await import(pathToFileURL(join(dir, 'verify-pack.mjs')).href)) as {
+      verifyFiles?: DesignTooling['verifyFiles'];
+    };
+    const gen = (await import(pathToFileURL(join(dir, 'generate.mjs')).href)) as {
+      renderTokenView?: DesignTooling['renderTokenView'];
+    };
+    return typeof vp.verifyFiles === 'function' && typeof gen.renderTokenView === 'function'
+      ? { verifyFiles: vp.verifyFiles, renderTokenView: gen.renderTokenView }
+      : null;
+  } catch {
     return null;
   }
-  try {
-    const vp = (await import(
-      pathToFileURL(join(dir, 'tooling', 'design', 'verify-pack.mjs')).href
-    )) as { verifyFiles?: DesignTooling['verifyFiles'] };
-    const gen = (await import(
-      pathToFileURL(join(dir, 'tooling', 'design', 'generate.mjs')).href
-    )) as { renderTokenView?: DesignTooling['renderTokenView'] };
-    toolingMemo =
-      typeof vp.verifyFiles === 'function' && typeof gen.renderTokenView === 'function'
-        ? { verifyFiles: vp.verifyFiles, renderTokenView: gen.renderTokenView }
-        : null;
-  } catch {
-    toolingMemo = null;
-  }
+}
+
+/** Load the corpus's zero-dependency design tooling (`verifyFiles` +
+ * `renderTokenView`), memoised for the process. Reads the tooling through the
+ * source adapter (local OR remote) and dynamically imports it. Null when the
+ * corpus is unreachable or the tooling can't be loaded — never throws, so a
+ * missing gate degrades to "not runnable here" rather than crashing enact.
+ * `fetch` is injected for tests. */
+export async function loadDesignTooling(
+  url: string = guardrailsUrl(),
+  fetch: (u: string) => Promise<Record<string, string> | null> = fetchDesignToolingFiles
+): Promise<DesignTooling | null> {
+  if (toolingMemo !== undefined) return toolingMemo;
+  const files = await fetch(url).catch(() => null);
+  toolingMemo = files ? await importTooling(files) : null;
   return toolingMemo;
 }
 
