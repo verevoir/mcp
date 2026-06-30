@@ -29,6 +29,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { AuditSpan } from './audit.js';
+import { auditSpansToOtlp } from './otlp.js';
 
 // ── Arg parsing ───────────────────────────────────────────────────────────────
 
@@ -153,79 +154,8 @@ function hashPid(s: string): number {
   return Math.abs(h) & 0x7fffffff;
 }
 
-// ── OTLP JSON format ──────────────────────────────────────────────────────────
-// https://opentelemetry.io/docs/specs/otlp/
-// ExportTraceServiceRequest → resourceSpans[] → scopeSpans[] → spans[]
-// Each AuditSpan → one OTLP Span (nanosecond timestamps, hex ids).
-
-interface OtlpSpan {
-  traceId: string;
-  spanId: string;
-  parentSpanId?: string;
-  name: string;
-  kind: number; // SpanKind enum: 1=INTERNAL, 2=SERVER, 3=CLIENT
-  startTimeUnixNano: string;
-  endTimeUnixNano: string;
-  attributes: Array<{ key: string; value: { stringValue?: string; intValue?: string } }>;
-  status: { code: number }; // 0=UNSET
-}
-
-const OTLP_KIND: Record<string, number> = { tool: 3, capability: 1, model: 3 };
-
-function toOtlp(spans: AuditSpan[], opts: { elideNotes?: boolean } = {}): unknown {
-  const otlpSpans: OtlpSpan[] = spans.map((s) => {
-    const startNs = BigInt(Date.parse(s.start)) * BigInt(1_000_000);
-    const endNs = startNs + BigInt(s.duration_ms) * BigInt(1_000_000);
-    const attrs: OtlpSpan['attributes'] = [
-      { key: 'span.kind.label', value: { stringValue: s.kind } },
-    ];
-    // Include note and purpose as OTLP string attributes so Datadog / Jaeger /
-    // Grafana Tempo display them alongside the span. When --elide-notes is
-    // passed, these fields are suppressed (see the sensitive-data note at the
-    // top of this file).
-    if (!opts.elideNotes) {
-      if (s.note) attrs.push({ key: 'note', value: { stringValue: s.note } });
-      if (s.purpose) attrs.push({ key: 'purpose', value: { stringValue: s.purpose } });
-    }
-    if (s.attributes) {
-      for (const [k, v] of Object.entries(s.attributes)) {
-        if (v === undefined || v === null) continue;
-        if (typeof v === 'number') {
-          attrs.push({ key: k, value: { intValue: String(Math.round(v)) } });
-        } else {
-          attrs.push({ key: k, value: { stringValue: String(v) } });
-        }
-      }
-    }
-    return {
-      traceId: uuidToHex(s.trace_id),
-      spanId: uuidToHex(s.span_id).slice(0, 16),
-      ...(s.parent_span_id ? { parentSpanId: uuidToHex(s.parent_span_id).slice(0, 16) } : {}),
-      name: s.name,
-      kind: OTLP_KIND[s.kind] ?? 1,
-      startTimeUnixNano: String(startNs),
-      endTimeUnixNano: String(endNs),
-      attributes: attrs,
-      status: { code: 0 },
-    };
-  });
-
-  return {
-    resourceSpans: [
-      {
-        resource: { attributes: [{ key: 'service.name', value: { stringValue: 'verevoir-mcp' } }] },
-        scopeSpans: [
-          { scope: { name: 'verevoir-audit-trace', version: '1.0.0' }, spans: otlpSpans },
-        ],
-      },
-    ],
-  };
-}
-
-/** Strip hyphens from a UUID for OTel hex ids. */
-function uuidToHex(uuid: string): string {
-  return uuid.replace(/-/g, '');
-}
+// OTLP mapping now lives in ./otlp.ts (shared with the live exporter in
+// audit.ts — STDIO-502). See `auditSpansToOtlp`, imported above.
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -235,7 +165,9 @@ if (spans.length === 0) {
 }
 
 const converterOpts = { elideNotes };
-const output = otlpMode ? toOtlp(spans, converterOpts) : toChromeTrace(spans, converterOpts);
+const output = otlpMode
+  ? auditSpansToOtlp(spans, converterOpts)
+  : toChromeTrace(spans, converterOpts);
 const json = JSON.stringify(output, null, 2);
 
 if (outputFile) {

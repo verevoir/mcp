@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.62.0 — 2026-06-30
+
+- **Live OTLP audit export — unify with Claude Code in one trace** (STDIO-502). When `OTEL_EXPORTER_OTLP_ENDPOINT` is set (and `AIGENCY_AUDIT` ≠ `off`), each audit span is POSTed live to `<endpoint>/v1/traces` in addition to the local JSONL — **fire-and-forget and fail-soft** (a slow/unreachable collector never blocks a tool). Because it's the standard OTel env, the MCP, **Claude Code** (`CLAUDE_CODE_ENABLE_TELEMETRY=1` + the same endpoint), and the aigency executor all land in **one trace**: stand up a throwaway collector for a session, then tear it down. The OTLP mapping moves to a shared `src/otlp.ts` used by both the live exporter and the `verevoir-audit-trace --otlp` file path, so the two are byte-identical.
+
 ## 0.61.0 — 2026-06-29
 
 - **Uniform tier call path — Anthropic / Gemini / OpenAI-compat / local all resolve** (STDIO-467). Replaces the `tierModel` → `modelConnection` (compat-only) path with a new `tierChat` that resolves tiers through the llm library's uniform provider-adapter layer. Every provider that registers a `chat` fn (Anthropic, Gemini, OpenAI, DeepSeek, SambaNova, Mistral, and direct-compat endpoints) now works for any tier — closing the gap where `AIGENCY_MODEL_REASONING=opus` with `ANTHROPIC_API_KEY` silently returned null.
