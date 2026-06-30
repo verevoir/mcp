@@ -3,6 +3,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CapabilityDescriptor } from '@verevoir/recipes';
 import { openSpan, deriveNote, type SpanContext } from '../audit.js';
 import { delegate } from './delegate.js';
+import type { Reviewer } from './review.js';
+import { resolveVerifier } from './design-gate.js';
 import { loadCapabilityCorpus } from './provision.js';
 
 // STDIO-507 — Enact a capability, structurally.
@@ -59,10 +61,10 @@ export function buildEnactmentPrompt(
     parts.push(`How this capability is done well:\n${descriptor.guidance.trim()}`);
   }
   if (descriptor.verify) {
-    // The named verifier is a HARD postcondition the work must satisfy. The
-    // deterministic check itself isn't yet runnable from the MCP (it lives in
-    // the corpus tooling — follow-up); naming it here at least aims the worker
-    // and the antagonistic reviewer at the right postcondition.
+    // The named verifier is a HARD postcondition the work must satisfy. Where the
+    // MCP can run it (see design-gate.ts) it IS enforced — the worker is looped on
+    // its findings; naming it here also aims the first produce at the right
+    // postcondition rather than at something merely plausible.
     parts.push(
       `This work has a hard postcondition ("${descriptor.verify}") it must satisfy — ` +
         `produce something that would pass that check, not merely something plausible.`
@@ -74,13 +76,24 @@ export function buildEnactmentPrompt(
 }
 
 /** A one-line header recording what was enacted and how, so the structural
- * enactment is visible in the result rather than silent. */
-export function enactmentHeader(descriptor: CapabilityDescriptor, verified: boolean): string {
+ * enactment is visible in the result rather than silent. `gateName` is the
+ * capability's declared verify when the MCP could run it as a hard check;
+ * absent, verification fell back to the reasoning-tier practices review. */
+export function enactmentHeader(
+  descriptor: CapabilityDescriptor,
+  verified: boolean,
+  gateName?: string
+): string {
+  const verifyBit = !verified
+    ? `verify: off (caller opted out)`
+    : gateName
+      ? `verified by: ${gateName} gate (deterministic, looped)`
+      : `verified on: reasoning tier (looped to the bar)`;
   const bits = [
     `capability: ${descriptor.type}`,
     `bar: provisioned + sent with the task (governed)`,
     `produced on: worker tier`,
-    verified ? `verified on: reasoning tier (looped to the bar)` : `verify: off (caller opted out)`,
+    verifyBit,
   ];
   if (descriptor.gate && descriptor.gate !== 'none') bits.push(`gate: ${descriptor.gate}`);
   return `— enacted — ${bits.join('  ·  ')} —`;
@@ -108,7 +121,8 @@ export interface EnactInput {
 export async function enactCapability(
   input: EnactInput,
   delegateFn: typeof delegate = delegate,
-  loadCorpus: typeof loadCapabilityCorpus = loadCapabilityCorpus
+  loadCorpus: typeof loadCapabilityCorpus = loadCapabilityCorpus,
+  resolveVerifierFn: typeof resolveVerifier = resolveVerifier
 ): Promise<string> {
   const corpus = await loadCorpus().catch(() => [] as CapabilityDescriptor[]);
   if (corpus.length === 0) {
@@ -130,23 +144,47 @@ export async function enactCapability(
   const verify = input.verify ?? true;
   const prompt = buildEnactmentPrompt(descriptor, input.directive, input.context);
 
+  // A capability addressed as a tool carries its own verification. When it
+  // declares a deterministic gate (`descriptor.verify`, e.g. `design-pack`) and
+  // the MCP can run it, ENFORCE that gate: inject it as the verifier so
+  // delegate's produce→verify loop loops the worker on the gate's findings. When
+  // there's no runnable gate, verification falls back to the reasoning-tier
+  // practices review delegate does by default. Resolution never throws.
+  const gateVerifier =
+    verify && descriptor.verify
+      ? await resolveVerifierFn(descriptor.verify, descriptor.type).catch(() => null)
+      : null;
+
   const span = openSpan(`enact:${descriptor.type}`, 'capability', {
     traceId: input.spanCtx?.traceId,
     parentId: input.spanCtx?.parentId,
     purpose: input.spanCtx?.purpose,
   });
 
-  const body = await delegateFn({
+  const delegateInput = {
     prompt,
     governed: true,
     verify,
     model: input.model,
     meter: input.meter,
     spanCtx: { traceId: span.traceId, parentId: span.spanId, purpose: span.purpose },
-  });
+  };
+
+  const body = gateVerifier
+    ? await delegateFn(
+        delegateInput,
+        undefined,
+        undefined,
+        async (): Promise<Reviewer> => ({
+          model: `${descriptor.verify} (deterministic gate)`,
+          verifier: gateVerifier,
+          usage: () => [],
+        })
+      )
+    : await delegateFn(delegateInput);
 
   span.finish();
-  return `${enactmentHeader(descriptor, verify)}\n\n${body}`;
+  return `${enactmentHeader(descriptor, verify, gateVerifier ? descriptor.verify : undefined)}\n\n${body}`;
 }
 
 /** Register the `enact_capability` tool — the structural executor. */

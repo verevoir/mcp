@@ -114,6 +114,41 @@ describe('enactCapability', () => {
     expect(call.prompt).toContain('convert-design-system');
   });
 
+  it('injects the declared gate as the reviewer when the MCP can run it', async () => {
+    const delegateFn = vi.fn().mockResolvedValue('TOKENS');
+    const gateVerifier = vi.fn(); // a stand-in Verifier
+    const resolveVerifierFn = vi.fn().mockResolvedValue(gateVerifier);
+    const out = await enactCapability(
+      { capability: 'convert-design-system', directive: 'Convert GOV.UK.' },
+      delegateFn,
+      async () => CORPUS,
+      resolveVerifierFn as never
+    );
+    // The gate name (descriptor.verify) was resolved against the capability type.
+    expect(resolveVerifierFn).toHaveBeenCalledWith('design-pack', 'convert-design-system');
+    // delegate was called with a 4th arg (makeReviewer) whose reviewer carries the gate.
+    const makeReviewer = delegateFn.mock.calls[0][3] as () => Promise<{ verifier: unknown }>;
+    expect(typeof makeReviewer).toBe('function');
+    const reviewer = await makeReviewer();
+    expect(reviewer.verifier).toBe(gateVerifier);
+    // The header records the deterministic gate, not the reasoning review.
+    expect(out).toContain('design-pack gate (deterministic');
+  });
+
+  it('falls back to the reasoning review when no gate is runnable', async () => {
+    const delegateFn = vi.fn().mockResolvedValue('TOKENS');
+    const resolveVerifierFn = vi.fn().mockResolvedValue(null); // no runnable gate
+    const out = await enactCapability(
+      { capability: 'convert-design-system', directive: 'x' },
+      delegateFn,
+      async () => CORPUS,
+      resolveVerifierFn as never
+    );
+    // delegate called WITHOUT the 4th makeReviewer arg → its default reasoning review.
+    expect(delegateFn.mock.calls[0].length).toBe(1);
+    expect(out).toContain('reasoning tier');
+  });
+
   it('lets the caller opt out of verify', async () => {
     const delegateFn = vi.fn().mockResolvedValue('draft');
     await enactCapability(
