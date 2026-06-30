@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CapabilityDescriptor } from '@verevoir/recipes';
+import type { Verifier } from '@verevoir/recipes/engine';
 import { openSpan, deriveNote, type SpanContext } from '../audit.js';
 import { delegate } from './delegate.js';
-import type { Reviewer } from './review.js';
+import { reasoningReviewer, type Reviewer } from './review.js';
 import { resolveVerifier } from './design-gate.js';
 import { loadCapabilityCorpus } from './provision.js';
 
@@ -87,7 +88,7 @@ export function enactmentHeader(
   const verifyBit = !verified
     ? `verify: off (caller opted out)`
     : gateName
-      ? `verified by: ${gateName} gate (deterministic, looped)`
+      ? `verified by: ${gateName} gate + reasoning review (looped)`
       : `verified on: reasoning tier (looped to the bar)`;
   const bits = [
     `capability: ${descriptor.type}`,
@@ -122,7 +123,8 @@ export async function enactCapability(
   input: EnactInput,
   delegateFn: typeof delegate = delegate,
   loadCorpus: typeof loadCapabilityCorpus = loadCapabilityCorpus,
-  resolveVerifierFn: typeof resolveVerifier = resolveVerifier
+  resolveVerifierFn: typeof resolveVerifier = resolveVerifier,
+  makeReasoningReviewerFn: typeof reasoningReviewer = reasoningReviewer
 ): Promise<string> {
   const corpus = await loadCorpus().catch(() => [] as CapabilityDescriptor[]);
   if (corpus.length === 0) {
@@ -146,10 +148,14 @@ export async function enactCapability(
 
   // A capability addressed as a tool carries its own verification. When it
   // declares a deterministic gate (`descriptor.verify`, e.g. `design-pack`) and
-  // the MCP can run it, ENFORCE that gate: inject it as the verifier so
-  // delegate's produce→verify loop loops the worker on the gate's findings. When
-  // there's no runnable gate, verification falls back to the reasoning-tier
-  // practices review delegate does by default. Resolution never throws.
+  // the MCP can run it, run that gate ALONGSIDE the antagonistic reasoning
+  // review — not instead of it. The gate proves STRUCTURE (DTCG validity,
+  // completeness); the review proves FIDELITY and judgement (the live GOV.UK run
+  // showed the review catches wrong values the gate cannot see). They are staged:
+  // the cheap deterministic gate filters structure first, so the expensive
+  // reasoning review only runs once the output is structurally sound — and the
+  // loop converges only when BOTH pass. With no runnable gate, verification is
+  // the reasoning review delegate does by default. Resolution never throws.
   const gateVerifier =
     verify && descriptor.verify
       ? await resolveVerifierFn(descriptor.verify, descriptor.type).catch(() => null)
@@ -170,17 +176,27 @@ export async function enactCapability(
     spanCtx: { traceId: span.traceId, parentId: span.spanId, purpose: span.purpose },
   };
 
-  const body = gateVerifier
-    ? await delegateFn(
-        delegateInput,
-        undefined,
-        undefined,
-        async (): Promise<Reviewer> => ({
-          model: `${descriptor.verify} (deterministic gate)`,
-          verifier: gateVerifier,
-          usage: () => [],
-        })
-      )
+  // The combined reviewer for a gated capability: gate first (short-circuit its
+  // findings so the worker fixes structure before any review spend), then the
+  // reasoning review when the gate passes. Usage is the review's (the gate is
+  // deterministic, zero tokens). Degrades to gate-only if no reasoning tier.
+  const makeGatedReviewer = gateVerifier
+    ? async (artefact?: string): Promise<Reviewer | null> => {
+        const review = await makeReasoningReviewerFn(artefact).catch(() => null);
+        const verifier: Verifier = async (vInput) => {
+          const g = await gateVerifier(vInput);
+          if (!g.ok) return g;
+          return review ? review.verifier(vInput) : { ok: true, findings: [] };
+        };
+        const label = [`${descriptor.verify} gate`, review ? `${review.model} review` : null]
+          .filter(Boolean)
+          .join(' + ');
+        return { model: label, verifier, usage: () => review?.usage() ?? [] };
+      }
+    : undefined;
+
+  const body = makeGatedReviewer
+    ? await delegateFn(delegateInput, undefined, undefined, makeGatedReviewer)
     : await delegateFn(delegateInput);
 
   span.finish();

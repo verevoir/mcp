@@ -114,25 +114,74 @@ describe('enactCapability', () => {
     expect(call.prompt).toContain('convert-design-system');
   });
 
-  it('injects the declared gate as the reviewer when the MCP can run it', async () => {
+  it('runs the gate AND the reasoning review, staged, for a gated capability', async () => {
     const delegateFn = vi.fn().mockResolvedValue('TOKENS');
-    const gateVerifier = vi.fn(); // a stand-in Verifier
-    const resolveVerifierFn = vi.fn().mockResolvedValue(gateVerifier);
+    // gate: first call fails on structure, second call passes.
+    const gate = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, findings: [{ kind: 'DTCG', message: 'bad structure' }] })
+      .mockResolvedValueOnce({ ok: true, findings: [] });
+    const resolveVerifierFn = vi.fn().mockResolvedValue(gate);
+    const reviewVerifier = vi
+      .fn()
+      .mockResolvedValue({ ok: false, findings: [{ kind: 'REVIEW', message: 'wrong values' }] });
+    const makeReasoningReviewerFn = vi
+      .fn()
+      .mockResolvedValue({ model: 'opus', verifier: reviewVerifier, usage: () => [] });
+
     const out = await enactCapability(
       { capability: 'convert-design-system', directive: 'Convert GOV.UK.' },
       delegateFn,
       async () => CORPUS,
-      resolveVerifierFn as never
+      resolveVerifierFn as never,
+      makeReasoningReviewerFn as never
     );
-    // The gate name (descriptor.verify) was resolved against the capability type.
     expect(resolveVerifierFn).toHaveBeenCalledWith('design-pack', 'convert-design-system');
-    // delegate was called with a 4th arg (makeReviewer) whose reviewer carries the gate.
-    const makeReviewer = delegateFn.mock.calls[0][3] as () => Promise<{ verifier: unknown }>;
-    expect(typeof makeReviewer).toBe('function');
-    const reviewer = await makeReviewer();
-    expect(reviewer.verifier).toBe(gateVerifier);
-    // The header records the deterministic gate, not the reasoning review.
-    expect(out).toContain('design-pack gate (deterministic');
+    const makeReviewer = delegateFn.mock.calls[0][3] as (a?: string) => Promise<{
+      verifier: (i: unknown) => Promise<{ ok: boolean; findings: { kind: string }[] }>;
+      model: string;
+    }>;
+    const reviewer = await makeReviewer('work');
+    const vin = { capability: 'c', verify: 'design-pack', result: '{}' };
+
+    // Structure fails → review is NOT spent, gate findings returned.
+    const v1 = await reviewer.verifier(vin);
+    expect(v1.ok).toBe(false);
+    expect(v1.findings[0].kind).toBe('DTCG');
+    expect(reviewVerifier).not.toHaveBeenCalled();
+
+    // Structure passes → the reasoning review runs and its findings surface.
+    const v2 = await reviewer.verifier(vin);
+    expect(reviewVerifier).toHaveBeenCalledOnce();
+    expect(v2.findings[0].kind).toBe('REVIEW');
+
+    expect(reviewer.model).toContain('design-pack gate');
+    expect(reviewer.model).toContain('review');
+    expect(out).toContain('design-pack gate + reasoning review');
+  });
+
+  it('degrades to gate-only when no reasoning tier is available', async () => {
+    const delegateFn = vi.fn().mockResolvedValue('TOKENS');
+    const gate = vi.fn().mockResolvedValue({ ok: true, findings: [] });
+    const resolveVerifierFn = vi.fn().mockResolvedValue(gate);
+    const makeReasoningReviewerFn = vi.fn().mockResolvedValue(null); // no reasoning tier
+    await enactCapability(
+      { capability: 'convert-design-system', directive: 'x' },
+      delegateFn,
+      async () => CORPUS,
+      resolveVerifierFn as never,
+      makeReasoningReviewerFn as never
+    );
+    const reviewer = await (
+      delegateFn.mock.calls[0][3] as (a?: string) => Promise<{
+        verifier: (i: unknown) => Promise<{ ok: boolean }>;
+        model: string;
+      }>
+    )('work');
+    const v = await reviewer.verifier({ capability: 'c', verify: 'design-pack', result: '{}' });
+    expect(v.ok).toBe(true); // gate passed, no review available → clean
+    expect(reviewer.model).toContain('design-pack gate');
+    expect(reviewer.model).not.toContain('review');
   });
 
   it('falls back to the reasoning review when no gate is runnable', async () => {
