@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.63.0 — 2026-06-30
+
+- **Flame-chart a Claude Code run — `verevoir-audit-trace --from-claude-transcript`** (STDIO-502, "Route 1"). OTel gives Claude Code's cost _metrics_ but not a span _timeline_; this fills that gap, and works retroactively on any past session transcript. A new pure converter (`src/claude-transcript.ts`, `claudeTranscriptToSpans`) turns a Claude Code session transcript (JSONL) into the same `AuditSpan` shape the MCP's own cascade emits: each assistant turn with usage becomes a `model` span (model + token attributes, duration = the think+generate gap since the previous entry), and each `tool_use` block becomes a `tool` span parented to its turn (note derived from the tool args, duration running to the matching `tool_result`). Subagent (`isSidechain`) turns thread into the cascade automatically via `parentUuid`. The `--from-claude-transcript` flag on `verevoir-audit-trace` swaps the _source_ of spans; everything downstream (Chrome trace / OTLP / `--elide-notes` / `-o`) is reused unchanged. Zero dependencies.
+
 ## 0.62.0 — 2026-06-30
 
 - **Live OTLP audit export — unify with Claude Code in one trace** (STDIO-502). When `OTEL_EXPORTER_OTLP_ENDPOINT` is set (and `AIGENCY_AUDIT` ≠ `off`), each audit span is POSTed live to `<endpoint>/v1/traces` in addition to the local JSONL — **fire-and-forget and fail-soft** (a slow/unreachable collector never blocks a tool). Because it's the standard OTel env, the MCP, **Claude Code** (`CLAUDE_CODE_ENABLE_TELEMETRY=1` + the same endpoint), and the aigency executor all land in **one trace**: stand up a throwaway collector for a session, then tear it down. The OTLP mapping moves to a shared `src/otlp.ts` used by both the live exporter and the `verevoir-audit-trace --otlp` file path, so the two are byte-identical.

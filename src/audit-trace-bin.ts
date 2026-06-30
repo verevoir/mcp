@@ -7,6 +7,10 @@
 //   verevoir-audit-trace <session.jsonl> --otlp       # → OTLP JSON (stdout)
 //   verevoir-audit-trace <session.jsonl> -o out.json  # write to file instead of stdout
 //   verevoir-audit-trace <session.jsonl> --elide-notes  # suppress note/purpose in output
+//   verevoir-audit-trace <transcript.jsonl> --from-claude-transcript
+//                                                     # treat the input as a Claude Code
+//                                                     # session transcript and convert it
+//                                                     # to spans before tracing (STDIO-502)
 //
 // Open the Chrome Trace output at:
 //   speedscope.app  (drop the file)
@@ -30,6 +34,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { AuditSpan } from './audit.js';
 import { auditSpansToOtlp } from './otlp.js';
+import { claudeTranscriptToSpans } from './claude-transcript.js';
 
 // ── Arg parsing ───────────────────────────────────────────────────────────────
 
@@ -37,15 +42,18 @@ const args = process.argv.slice(2);
 
 function usage(): void {
   process.stderr.write(
-    'Usage: verevoir-audit-trace <session.jsonl> [--otlp] [--elide-notes] [-o <output.json>]\n' +
+    'Usage: verevoir-audit-trace <session.jsonl> [--otlp] [--elide-notes] [--from-claude-transcript] [-o <output.json>]\n' +
       '\n' +
       'Converts a session audit JSONL file to a flame-chart format.\n' +
       '\n' +
       'Options:\n' +
-      '  --otlp           Emit OTLP JSON instead of Chrome Trace format.\n' +
-      '  --elide-notes    Omit note and purpose fields from output (for OTLP\n' +
-      '                   export when prompt content is considered sensitive).\n' +
-      '  -o <file>        Write output to <file> instead of stdout.\n' +
+      '  --otlp                    Emit OTLP JSON instead of Chrome Trace format.\n' +
+      '  --elide-notes             Omit note and purpose fields from output (for OTLP\n' +
+      '                            export when prompt content is considered sensitive).\n' +
+      '  --from-claude-transcript  Treat the input as a Claude Code session transcript\n' +
+      '                            (JSONL) and convert it to audit spans before tracing,\n' +
+      '                            so a Claude-Code-native run renders as a flame chart.\n' +
+      '  -o <file>                 Write output to <file> instead of stdout.\n' +
       '\n' +
       'View Chrome Trace output at speedscope.app, Perfetto (ui.perfetto.dev),\n' +
       'or chrome://tracing.\n' +
@@ -60,6 +68,7 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
 
 const otlpMode = args.includes('--otlp');
 const elideNotes = args.includes('--elide-notes');
+const fromClaudeTranscript = args.includes('--from-claude-transcript');
 const outIdx = args.indexOf('-o');
 const outputFile = outIdx >= 0 ? args[outIdx + 1] : null;
 const inputFile = args.find((a) => !a.startsWith('-') && a !== (outputFile ?? ''));
@@ -159,7 +168,12 @@ function hashPid(s: string): number {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-const spans = loadSpans(inputFile);
+// --from-claude-transcript swaps the *source* of spans (a Claude Code session
+// transcript converted to spans) for the native JSONL audit log; everything
+// downstream (Chrome trace / OTLP / --elide-notes / -o) is unchanged.
+const spans = fromClaudeTranscript
+  ? claudeTranscriptToSpans(readFileSync(resolve(inputFile), 'utf8'))
+  : loadSpans(inputFile);
 if (spans.length === 0) {
   process.stderr.write('warn: no spans found in the input file.\n');
 }
