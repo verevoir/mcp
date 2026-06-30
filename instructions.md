@@ -13,6 +13,15 @@ It returns, in one call as text, the **foundational floor practices in full** pl
 
 If you hand the work to another model, the bar must travel with it — a floor worker won't fetch it itself. The **`delegate`** tool does this for you by default (it provisions the worker's task and carries the frame into its prompt); for a sub-agent you spawn another way, pass a provisioned frame in its prompt yourself. A weak/headless caller with no coordinator to narrow can pass `autoTag: true` to have `provision` select the concerns in-MCP instead of returning a menu.
 
+## Handing off work — delegate down, and the bar goes with it
+
+When a piece of work is **mechanical or bulk** — scaffolding, boilerplate, repetitive file-writing, a wide read-and-summarise — hand it to **`delegate`** (a bounded sub-task) or **`dispatch`** (a whole task a worker drives agentically) rather than doing it inline or spawning a same-tier sub-agent of your own. Two things happen by default that don't happen otherwise:
+
+- **It runs on a cheaper tier.** `delegate` / `dispatch` route to the configured worker, so the bulk of the tokens leave the expensive coordinator. A sub-agent you spawn another way inherits _your_ tier — so parallelising it makes the work faster but not cheaper, and often dearer (more coordination at the top tier).
+- **The bar travels with it.** Governed by default, `delegate` provisions the work's own practices and carries them into the worker's prompt, so a cheaper model is held to the same standard. A worker handed the task _without_ the bar does competent work to the _wrong_ standard — the cheaper tier is only safe _because_ the bar is attached.
+
+Rule of thumb: **the reasoning, and the decision of what to hand off, stay with you; the doing goes to `delegate` / `dispatch`, which pick the tier and carry the standard.** Keep inline work for the small, judgement-heavy pieces.
+
 ## One surface, auto-routed by URL
 
 The same tools work uniformly across:
