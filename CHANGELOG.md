@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.65.0 — 2026-06-30
+
+- **Steer sessions to governed delegation for bulk work** (STDIO-508). The injected doctrine (`instructions.md`) gains a **"handing off work"** section: for mechanical or bulk work (scaffolding, boilerplate, repetitive writing, wide read-and-summarise), prefer `delegate` / `dispatch` over doing it inline or spawning a same-tier sub-agent of your own — they route to a **cheaper tier** *and* **carry the provisioned bar** into the worker, whereas a self-spawned sub-agent inherits the coordinator's tier and has no standard attached. Substrate-carried, so it steers every connected session without a per-prompt nudge. (Stacks after 0.64.0 / PR #96 — whichever merges second rebases the CHANGELOG.)
+
 ## 0.63.0 — 2026-06-30
 
 - **Flame-chart a Claude Code run — `verevoir-audit-trace --from-claude-transcript`** (STDIO-502, "Route 1"). OTel gives Claude Code's cost _metrics_ but not a span _timeline_; this fills that gap, and works retroactively on any past session transcript. A new pure converter (`src/claude-transcript.ts`, `claudeTranscriptToSpans`) turns a Claude Code session transcript (JSONL) into the same `AuditSpan` shape the MCP's own cascade emits: each assistant turn with usage becomes a `model` span (model + token attributes, duration = the think+generate gap since the previous entry), and each `tool_use` block becomes a `tool` span parented to its turn (note derived from the tool args, duration running to the matching `tool_result`). Subagent (`isSidechain`) turns thread into the cascade automatically via `parentUuid`. The `--from-claude-transcript` flag on `verevoir-audit-trace` swaps the _source_ of spans; everything downstream (Chrome trace / OTLP / `--elide-notes` / `-o`) is reused unchanged. Zero dependencies.
