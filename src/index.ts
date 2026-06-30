@@ -7,6 +7,7 @@ import { registerProvisionTool } from './tools/provision.js';
 import { registerDelegateTool } from './tools/delegate.js';
 import { registerDispatchTool } from './tools/dispatch.js';
 import { registerLoopTools } from './tools/loop.js';
+import { registerEnactTool } from './tools/enact.js';
 import { loadInstructions } from './instructions.js';
 import { loadManifest, composeInstructions } from './manifest.js';
 
@@ -48,6 +49,11 @@ export async function createServer(): Promise<McpServer> {
   // run as background jobs over the worker model — refine until the work meets
   // a deterministic/judge/practices bar, or search K diverse seeds and select.
   registerLoopTools(server);
+  // The structural executor: enact a named capability against a directive —
+  // governed + verified + produced on the worker tier in one call, so the
+  // tiering and the bar are applied structurally rather than left to the
+  // session's per-turn judgement (STDIO-507).
+  registerEnactTool(server);
   // Best-effort: registers the guardrails reasoning skills as prompts. A load
   // failure (no token, source unreachable) leaves the server running with its
   // tools and no skill prompts rather than failing to start.

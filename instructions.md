@@ -20,7 +20,9 @@ When a piece of work is **mechanical or bulk** — scaffolding, boilerplate, rep
 - **It runs on a cheaper tier.** `delegate` / `dispatch` route to the configured worker, so the bulk of the tokens leave the expensive coordinator. A sub-agent you spawn another way inherits _your_ tier — so parallelising it makes the work faster but not cheaper, and often dearer (more coordination at the top tier).
 - **The bar travels with it.** Governed by default, `delegate` provisions the work's own practices and carries them into the worker's prompt, so a cheaper model is held to the same standard. A worker handed the task _without_ the bar does competent work to the _wrong_ standard — the cheaper tier is only safe _because_ the bar is attached.
 
-Rule of thumb: **the reasoning, and the decision of what to hand off, stay with you; the doing goes to `delegate` / `dispatch`, which pick the tier and carry the standard.** Keep inline work for the small, judgement-heavy pieces.
+When the work is something a **capability** covers — converting a design system to tokens, scaffolding a service, a discovery pass — reach for **`enact_capability`** rather than assembling the handoff yourself. You name the capability and a directive; it loads what a good output looks like, provisions the bar, produces on the worker tier, and verifies the result against that bar on the reasoning tier — looping until it passes. It is the single door for capability-shaped work: the tiering and the verify are applied structurally, so you don't have to remember to delegate, attach the bar, and review by hand each time.
+
+Rule of thumb: **the reasoning, and the decision of what to hand off, stay with you; the doing goes to `enact_capability` (capability-shaped work) or `delegate` / `dispatch` (free-form bulk), which pick the tier and carry the standard.** Keep inline work for the small, judgement-heavy pieces.
 
 ## One surface, auto-routed by URL
 
