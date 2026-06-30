@@ -1,70 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  pickToolingFiles,
-  loadDesignTooling,
-  clearDesignToolingMemo,
-  extractTokenJson,
-  designPackVerifier,
-  type DesignTooling,
-} from '../src/tools/design-gate.js';
-
-beforeEach(() => clearDesignToolingMemo());
-
-describe('pickToolingFiles', () => {
-  it('keeps the .mjs sources and drops tests and non-mjs', () => {
-    const picked = pickToolingFiles([
-      { type: 'file', name: 'verify-pack.mjs', path: 'tooling/design/verify-pack.mjs' },
-      { type: 'file', name: 'generate.mjs', path: 'tooling/design/generate.mjs' },
-      { type: 'file', name: 'gate.test.mjs', path: 'tooling/design/gate.test.mjs' },
-      { type: 'file', name: 'README.md', path: 'tooling/design/README.md' },
-      { type: 'dir', name: 'sub', path: 'tooling/design/sub' },
-    ]);
-    expect(picked.map((f) => f.name).sort()).toEqual(['generate.mjs', 'verify-pack.mjs']);
-  });
-});
-
-// Stub tooling modules — minimal real .mjs the loader materialises + imports,
-// so the materialise→import path is exercised hermetically (no corpus, no
-// network). verify-pack echoes a verdict from the token JSON it's handed.
-const STUB_FILES: Record<string, string> = {
-  'verify-pack.mjs':
-    'export function verifyFiles(files){' +
-    'const json=Object.entries(files).find(([p])=>p.endsWith(".tokens.json"));' +
-    'const ok=json && JSON.parse(json[1]).ok===true;' +
-    'return ok?{ok:true,findings:[]}:{ok:false,findings:[{kind:"DTCG",message:"stub reject"}]};}',
-  'generate.mjs': 'export function renderTokenView(){return "## view";}',
-};
-
-describe('loadDesignTooling', () => {
-  it('materialises fetched tooling to a temp dir and imports verifyFiles + renderTokenView', async () => {
-    const tooling = await loadDesignTooling('any-url', async () => STUB_FILES);
-    expect(tooling).not.toBeNull();
-    expect(typeof tooling!.verifyFiles).toBe('function');
-    expect(tooling!.renderTokenView(null)).toBe('## view');
-    expect(tooling!.verifyFiles({ 'x.tokens.json': '{"ok":true}' }).ok).toBe(true);
-    expect(tooling!.verifyFiles({ 'x.tokens.json': '{"ok":false}' }).ok).toBe(false);
-  });
-
-  it('returns null when the fetch finds no tooling (remote unreachable / empty)', async () => {
-    expect(await loadDesignTooling('any-url', async () => null)).toBeNull();
-  });
-
-  it('returns null when the tooling is missing its required modules', async () => {
-    expect(
-      await loadDesignTooling('any-url', async () => ({
-        'generate.mjs': STUB_FILES['generate.mjs'],
-      }))
-    ).toBeNull();
-  });
-
-  it('never throws when the fetch rejects — degrades to null', async () => {
-    expect(
-      await loadDesignTooling('any-url', async () => {
-        throw new Error('network down');
-      })
-    ).toBeNull();
-  });
-});
+import { describe, it, expect } from 'vitest';
+import { extractTokenJson, designPackVerifier, resolveVerifier } from '../src/tools/design-gate.js';
 
 describe('extractTokenJson', () => {
   it('pulls JSON out of a ```json fence', () => {
@@ -83,52 +18,56 @@ describe('extractTokenJson', () => {
   });
 });
 
-function fakeTooling(verdict: {
-  ok: boolean;
-  findings: { kind: string; file?: string; where?: string; message: string }[];
-}): DesignTooling {
-  return {
-    renderTokenView: () => '## view',
-    verifyFiles: (files) => {
-      const paths = Object.keys(files);
-      expect(paths.some((p) => p.endsWith('.tokens.json'))).toBe(true);
-      expect(paths.some((p) => p.endsWith('.tokens.md'))).toBe(true);
-      return verdict;
-    },
-  };
-}
+// designPackVerifier runs the REAL shared @verevoir/design-gate (zero-dep, pure,
+// no network) — so these exercise the actual gate, not a stub. The verifier
+// renders the generated view itself, so VIEW_DRIFT can't fire here; what's left
+// is DTCG validity, which is the gate's real force.
+const VALID = JSON.stringify({
+  $schema: 'https://tr.designtokens.org/format/',
+  color: { brand: { $value: '#1d70b8', $type: 'color' } },
+});
+const MISSING_TYPE = JSON.stringify({ color: { brand: { $value: '#fff' } } });
 
 describe('designPackVerifier', () => {
-  it('passes clean tokens through to a clean verdict', async () => {
-    const v = designPackVerifier(fakeTooling({ ok: true, findings: [] }), 'generate-design-tokens');
-    const res = await v({
-      capability: 'generate-design-tokens',
-      verify: 'design-pack',
-      result: '{"color":{}}',
-    });
+  it('passes a valid DTCG token file', async () => {
+    const v = designPackVerifier('generate-design-tokens');
+    const res = await v({ capability: 'c', verify: 'design-pack', result: VALID });
     expect(res.ok).toBe(true);
+    expect(res.findings).toEqual([]);
   });
 
-  it('surfaces the gate findings for a re-produce', async () => {
-    const findings = [{ kind: 'DTCG', message: 'leaf missing $value' }];
-    const v = designPackVerifier(fakeTooling({ ok: false, findings }), 'generate-design-tokens');
+  it('surfaces real gate findings (DTCG) for a malformed token, so the worker can fix them', async () => {
+    const v = designPackVerifier('generate-design-tokens');
     const res = await v({
-      capability: 'generate-design-tokens',
+      capability: 'c',
       verify: 'design-pack',
-      result: '```json\n{"color":{}}\n```',
+      result: `\`\`\`json\n${MISSING_TYPE}\n\`\`\``,
     });
     expect(res.ok).toBe(false);
-    expect(res.findings[0].kind).toBe('DTCG');
+    expect(res.findings.some((f) => f.kind === 'DTCG')).toBe(true);
   });
 
   it('fails closed with a PARSE finding when no JSON is produced', async () => {
-    const v = designPackVerifier(fakeTooling({ ok: true, findings: [] }), 'generate-design-tokens');
+    const v = designPackVerifier('generate-design-tokens');
     const res = await v({
-      capability: 'generate-design-tokens',
+      capability: 'c',
       verify: 'design-pack',
       result: 'I could not produce tokens.',
     });
     expect(res.ok).toBe(false);
     expect(res.findings[0].kind).toBe('PARSE');
+  });
+});
+
+describe('resolveVerifier', () => {
+  it('returns a runnable verifier for design-pack (the shared package is always present)', async () => {
+    expect(typeof (await resolveVerifier('design-pack', 'generate-design-tokens'))).toBe(
+      'function'
+    );
+  });
+
+  it('returns null for a verify name with no runner', async () => {
+    expect(await resolveVerifier('some-other-gate', 'x')).toBeNull();
+    expect(await resolveVerifier(undefined, 'x')).toBeNull();
   });
 });
