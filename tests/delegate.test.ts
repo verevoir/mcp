@@ -416,10 +416,13 @@ describe('delegate — verify (antagonistic review on the reasoning tier)', () =
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(2); // initial + one fix re-produce
-    // the re-produce prompt carries the review findings for the worker to fix
+    // the re-produce threads the worker's own previous output back in (fix, not
+    // blind regenerate), the findings, and a demand for the corrected artifact
+    // only — a smaller worker otherwise derails into discussing the feedback.
     const fix = userTurnOf(fetchMock, 1);
-    expect(fix).toContain('rejected in an antagonistic review');
+    expect(fix).toContain('WORKER OUTPUT');
     expect(fix).toContain('no error-path coverage');
+    expect(fix).toContain('Output only the corrected');
     expect(out).toContain('WORKER OUTPUT');
     expect(out).toContain('reviewed on fake-reasoner (reasoning): approved after 2 attempt(s)');
   });

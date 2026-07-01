@@ -16,6 +16,23 @@ describe('extractTokenJson', () => {
     expect(extractTokenJson('no json here at all')).toBeNull();
     expect(extractTokenJson('{ not: valid json }')).toBeNull();
   });
+
+  it('picks the DTCG token set past an earlier non-token JSON block', () => {
+    // A full multi-part run's produced text holds example-site configs (which
+    // parse as JSON) BEFORE the token set. The DTCG markers ($value/$type) must
+    // win, not the first thing that happens to parse.
+    const text =
+      'Node site config:\n```json\n{"name":"example-site","version":"1.0.0"}\n```\n' +
+      'and the tokens:\n```json\n{"color":{"brand":{"$value":"#1d70b8","$type":"color"}}}\n```';
+    const out = extractTokenJson(text);
+    expect(out).toContain('$value');
+    expect(JSON.parse(out!)).toHaveProperty('color');
+  });
+
+  it('falls back to the first valid JSON when none carry DTCG markers', () => {
+    const out = extractTokenJson('```json\n{"a":1}\n```');
+    expect(JSON.parse(out!)).toEqual({ a: 1 });
+  });
 });
 
 // designPackVerifier runs the REAL shared @verevoir/design-gate (zero-dep, pure,
