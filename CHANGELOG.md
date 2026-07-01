@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.68.0 — 2026-07-01
+
+- **Delegation-discovery steer: route at produce-time, and coupling is a decompose signal not a keep-it signal** (STDIO-516). The handoff guidance was missed in practice: a capable session, told to delegate 'mechanical or bulk' work, self-classified ~1300 lines of coupled templating as *careful, not bulk*, so the trigger excluded exactly the work that should have been handed down — and the escape clause ('keep inline the judgement-heavy pieces') sanctioned keeping it. Rewritten as a **precondition tied to the volume of what you are about to generate** (not whether it 'feels mechanical'), and it names the exact trap: *"too coupled / too careful to delegate" is the signal to DECOMPOSE, not to self-generate* — force a shared scaffold stage that **documents the common contract**, make each variant a leaf that references it (the coupling relocates into one explicit contract, not implicit cross-file consistency), so each leaf is narrow, delegatable, parallel, and the gate verifies it against the contract. Inline is narrowed to small surgical edits + the coordination itself. Substrate-carried, so it steers every connected session.
+
 ## 0.67.0 — 2026-06-30
 
 - **The design gate runs from the shared package, and runs alongside the antagonistic review** (STDIO-510). Two changes that make the STDIO-507 gate genuinely useful:
