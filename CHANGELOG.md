@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.72.0 — 2026-07-01
+
+- **Coordinator harness: route the tier override by PROVIDER, not through the worker** (STDIO-521 fix). The full-workload runs failed — every up/down delegation returned 0 tokens and no output — because the executor sent the coordinator’s `model` override (`opus`/`haiku`) through `delegateDetailed`, which resolves against the ONE configured worker provider (SambaNova serves DeepSeek, not Anthropic’s opus/haiku). Added `termChat(term)` (resolves any term to whichever provider serves it) and routed delegate/dispatch through a new `runDelegated` that follows the term to its real provider (up→opus, down→haiku, worker→DeepSeek), capturing usage. enact_capability now self-tiers — the coordinator’s tier override is no longer forwarded to it (forwarding it pushed the enact’s worker onto a model its provider can’t serve). Executor routing unit-tested.
+
 ## 0.71.0 — 2026-07-01
 
 - **Coordinator cost×quality harness** (STDIO-521). The un-stubbed sibling of the 519 harness: drives a coordinator (mistral / opus / sonnet) over the real design workload with an executor that RUNS the tools it calls — real enact/delegate with the up→opus / down→haiku model override — capturing per-model token usage into a tier cost breakdown (coordinator vs reasoning vs light vs worker, priced from catalog rates) and running the produced DTCG tokens through the shared design-gate + a done-well checklist. Answers "does mistral coordinating cost less than opus/sonnet, and is the output as good?" Dev tooling, real execution (run with keys, not in CI); pure cost + checklist logic unit-tested.

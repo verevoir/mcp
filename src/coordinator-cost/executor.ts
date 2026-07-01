@@ -6,8 +6,14 @@
 //   - enact_capability → real `enactCapability` (produces on the worker tier,
 //     gates + reviews). Its internal `delegate` is wrapped so the worker/reviewer
 //     usage is captured.
-//   - delegate / dispatch → real `delegateDetailed` with the coordinator's
-//     `model` override (up→opus, down→haiku); its `usages` are captured.
+//   - delegate / dispatch → the coordinator's `model` override routed to
+//     whichever PROVIDER serves it (up→opus, down→haiku, worker→DeepSeek) via
+//     `termChat` + a direct chat, capturing its usage. NOT `delegateDetailed`,
+//     which resolves against the ONE configured worker provider and so can't
+//     reach opus/haiku — the plumbing gap that made every up/down delegation in
+//     the full run return 0 tokens and no output.
+//   - enact_capability self-tiers (worker + reasoning review); the coordinator's
+//     tier override is deliberately NOT forwarded to it.
 //   - read_file / grep → a real read of the named source.
 //   - write_file → captured into the in-memory WORKSPACE (no disk touched).
 //
@@ -26,6 +32,7 @@ import { delegateDetailed, type WorkerCall, type delegate } from '../tools/deleg
 type Delegate = typeof delegate;
 import { pickSourceAdapter, resolveSourceEnv } from '../router.js';
 import { grepSource, wrapWithCache } from '@verevoir/context';
+import { termChat, tierEnvConfig } from '../tiers.js';
 import type { RecordedCall } from './cost.js';
 
 /** The in-memory workspace: files the coordinator "wrote", keyed by path. Never
@@ -52,6 +59,13 @@ export interface ExecutorDeps {
   readSource?: (source: string, path: string) => Promise<string>;
   /** Greps a source, returning matching lines or a legible message; injected. */
   grepSourceFn?: (source: string, pattern: string) => Promise<string>;
+  /** Runs a delegated prompt on a named model term, routing to the right
+   * provider (up/down/worker); injected for tests. */
+  runDelegatedFn?: (
+    term: string,
+    prompt: string,
+    system: string | undefined
+  ) => Promise<DelegatedRun>;
   /** The default source used when a read/grep names none (the run's source). */
   defaultSource?: string;
 }
@@ -121,6 +135,65 @@ function overrideModel(input: Record<string, unknown>): string | undefined {
   return typeof input.model === 'string' && input.model.trim() ? input.model.trim() : undefined;
 }
 
+/** The result of a delegated run: the produced text, the per-model usage, and
+ * the concrete model that actually ran. */
+export interface DelegatedRun {
+  text: string;
+  usage: PerModelUsage;
+  model: string;
+}
+
+/** The worker tier's model term, for a delegate that names no override (falls to
+ * the cheap worker). Read once from the extraction-tier config. */
+function workerTerm(): string {
+  return tierEnvConfig('extraction').model ?? 'haiku';
+}
+
+/**
+ * Run a delegated prompt on the model term the coordinator named, routing to
+ * whichever provider serves it — up→opus (Anthropic), down→haiku (Anthropic),
+ * worker→DeepSeek (SambaNova). This is the fix for the inverted-tier plumbing:
+ * `delegate`/`delegateDetailed` resolve their model against the ONE configured
+ * worker provider, so they cannot reach opus/haiku; `termChat` follows the term
+ * to its real provider. Never throws — an unservable term or a transport error
+ * returns a legible note with empty usage, so the coordinator loop proceeds.
+ */
+async function defaultRunDelegated(
+  term: string,
+  prompt: string,
+  system: string | undefined
+): Promise<DelegatedRun> {
+  const resolved = await termChat(term).catch(() => null);
+  if (!resolved) {
+    return { text: `<delegate: no provider serves model "${term}">`, usage: {}, model: term };
+  }
+  try {
+    const reply = await resolved.chat({
+      systemPrompt:
+        system ?? 'You are a worker completing a delegated sub-task. Return only the result.',
+      turns: [{ role: 'user', content: prompt }],
+    });
+    const u = reply.usage;
+    const usage: PerModelUsage = u
+      ? {
+          [resolved.modelId]: {
+            in: u.inputTokens ?? 0,
+            out: u.outputTokens ?? 0,
+            cacheRead: u.cacheReadInputTokens ?? 0,
+            cacheWrite: u.cacheCreationInputTokens ?? 0,
+          },
+        }
+      : {};
+    return { text: reply.content, usage, model: resolved.modelId };
+  } catch (err) {
+    return {
+      text: `<delegate to ${resolved.modelId} failed: ${String(err).slice(0, 160)}>`,
+      usage: {},
+      model: resolved.modelId,
+    };
+  }
+}
+
 /**
  * Build the un-stubbed executor over a fresh {@link ExecutionLog}. The returned
  * function is what `chatWithToolLoop` calls per tool_use; it runs the real tool,
@@ -140,6 +213,7 @@ export function makeExecutor(
   const delegateFn = deps.delegateFn ?? delegateDetailed;
   const readSource = deps.readSource ?? defaultReadSource;
   const grepFn = deps.grepSourceFn ?? defaultGrepSource;
+  const runDelegated = deps.runDelegatedFn ?? defaultRunDelegated;
   const defaultSource = deps.defaultSource ?? '';
 
   return async (toolUse: ToolUse): Promise<string> => {
@@ -159,32 +233,37 @@ export function makeExecutor(
         return call.text;
       };
 
+      // enact self-tiers (worker production + reasoning review), so the
+      // coordinator's up/down tier override is NOT forwarded to it — forwarding
+      // "opus"/"haiku" would push the enact's WORKER onto a model its provider
+      // can't serve, which is what broke the full run. Tier-routing is
+      // delegate/dispatch's job (below, via runDelegated).
       const text = await enact(
         {
           capability: String(input.capability ?? ''),
           directive: String(input.directive ?? ''),
           context: typeof input.context === 'string' ? input.context : undefined,
-          model: overrideModel(input),
         },
         capturingDelegate
       );
       const ms = Date.now() - startedAt;
       const usage = captured.length ? sumUsages(captured) : {};
-      recordUsage(log, 'enact_capability', usage, overrideModel(input) ?? '(worker)', ms);
+      recordUsage(log, 'enact_capability', usage, '(worker)', ms);
       log.produced.push(text);
       return text;
     }
 
     if (toolUse.name === 'delegate' || toolUse.name === 'dispatch') {
-      const call = await delegateFn({
-        prompt: String(input.prompt ?? ''),
-        system: typeof input.system === 'string' ? input.system : undefined,
-        model: overrideModel(input),
-      });
+      // Route the coordinator's named tier to whichever provider serves it —
+      // up→opus, down→haiku, worker→DeepSeek — NOT through the worker-locked
+      // delegate, which can only reach its one provider.
+      const term = overrideModel(input) ?? workerTerm();
+      const system = typeof input.system === 'string' ? input.system : undefined;
+      const run = await runDelegated(term, String(input.prompt ?? ''), system);
       const ms = Date.now() - startedAt;
-      recordUsage(log, toolUse.name, rollup(call), overrideModel(input) ?? '(worker)', ms);
-      log.produced.push(call.text);
-      return call.text;
+      recordUsage(log, toolUse.name, run.usage, run.model, ms);
+      log.produced.push(run.text);
+      return run.text;
     }
 
     if (toolUse.name === 'read_file') {
