@@ -21,32 +21,43 @@ import { verifyFiles, renderTokenView } from '@verevoir/design-gate';
  * that parses as JSON, else null. */
 export function extractTokenJson(text: string): string | null {
   const candidates: string[] = [];
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) candidates.push(fence[1].trim());
-  const start = text.indexOf('{');
-  if (start >= 0) {
+  // EVERY fenced block, not just the first — a multi-part run's produced text
+  // holds example-site code fences as well as the token set.
+  for (const m of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    candidates.push(m[1].trim());
+  }
+  // EVERY top-level brace-balanced block, in order.
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
     let depth = 0;
-    for (let i = start; i < text.length; i++) {
-      const c = text[i];
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
       if (c === '{') depth++;
       else if (c === '}') {
         depth--;
         if (depth === 0) {
-          candidates.push(text.slice(start, i + 1));
+          candidates.push(text.slice(i, j + 1));
+          i = j; // resume scanning after this block, not inside it
           break;
         }
       }
     }
   }
+  // Prefer a candidate that parses AND carries the DTCG markers ($value/$type):
+  // a full run also emits example-site configs (package.json, tsconfig) that
+  // parse as JSON but aren't the token set. Fall back to the first valid JSON so
+  // a bare token set (no other JSON around) still resolves.
+  let firstValid: string | null = null;
   for (const c of candidates) {
     try {
       JSON.parse(c);
-      return c;
     } catch {
-      // try the next candidate
+      continue;
     }
+    if (firstValid === null) firstValid = c;
+    if (/"\$value"|"\$type"/.test(c)) return c;
   }
-  return null;
+  return firstValid;
 }
 
 /** A corpus-safe file stem for the produced token file. */

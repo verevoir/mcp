@@ -322,13 +322,25 @@ export async function delegateDetailed(
   return reviewed;
 }
 
-/** The directive for a verify re-produce: the original prompt plus the review's
- * blocking findings, so the worker re-reads its own output and fixes what failed. */
-function withReviewFindings(prompt: string, findings: VerifyFinding[]): string {
+/** The directive for a verify re-produce: the original task, the worker's own
+ * previous output, and the blocking findings — with a hard instruction to return
+ * ONLY the corrected artifact. Threading the previous output makes this a fix, not
+ * a blind regenerate; demanding artifact-only output stops a smaller worker
+ * derailing into a discussion of the feedback instead of re-producing the work. */
+function withReviewFindings(
+  prompt: string,
+  previousOutput: string,
+  findings: VerifyFinding[]
+): string {
   return (
-    `${prompt}\n\n--- your previous output was rejected in an antagonistic review ---\n` +
-    `Fix these blocking defects and return the corrected work IN FULL — the task is not done until the review passes:\n\n` +
-    `${formatFindings(findings)}`
+    `${prompt}\n\n` +
+    `--- your previous attempt failed automated verification ---\n` +
+    `Your previous output:\n\n${previousOutput}\n\n` +
+    `It failed these blocking checks:\n\n${formatFindings(findings)}\n\n` +
+    `Apply every fix above and return the COMPLETE corrected artifact — the work ` +
+    `itself (e.g. the full token JSON), and NOTHING else. Do not explain, do not ` +
+    `discuss the feedback, do not describe your changes. Output only the corrected ` +
+    `work; it is not done until every check passes.`
   );
 }
 
@@ -393,6 +405,9 @@ async function runReviewed(
 
   let firstConsumed = false;
   let lastFindings: VerifyFinding[] = [];
+  // The worker's most recent output, threaded into the next re-produce so it fixes
+  // its own work rather than regenerating blind.
+  let lastOutput = first.text;
   try {
     const outcome = await runWithVerify({
       capability: 'delegate',
@@ -400,16 +415,17 @@ async function runReviewed(
       produce: async ({ findings, attempt }) => {
         lastFindings = findings;
         // Reuse the call already made for attempt 1; later attempts re-produce
-        // with the review findings folded in.
+        // with the previous output and the findings folded in.
         if (attempt === 1 && !firstConsumed) {
           firstConsumed = true;
           return first.text;
         }
-        const call = await callWorker(withReviewFindings(prompt, findings));
+        const call = await callWorker(withReviewFindings(prompt, lastOutput, findings));
         // A worker that dies mid-fix must not have its error string reviewed (and
         // possibly approved) — stop and surface the last good result instead.
         if (!call.ok) throw new ReproduceFailed(call);
         if (call.usage) workerUsages.push(call.usage);
+        lastOutput = call.text;
         return call.text;
       },
       verifier: reviewer.verifier,
@@ -418,8 +434,12 @@ async function runReviewed(
       ? `approved after ${outcome.attempts} attempt(s)`
       : `NOT approved after ${outcome.attempts} attempt(s):\n${formatFindings(outcome.findings)}`;
     return {
+      // Not converged = the verify loop exhausted its attempts with the gate/
+      // review STILL failing. That output has not met the bar, so it must NOT be
+      // reported as a successful produce — a caller (or the plan executor) needs
+      // to see it failed, not ship a gate-failing token set stamped "ok".
       text: `${outcome.result}\n\n— reviewed on ${reviewer.model} (reasoning): ${verdict}`,
-      ok: true,
+      ok: outcome.converged,
       model,
       usage: workerTotal(),
       usages: [...workerUsages, ...reviewer.usage()],
