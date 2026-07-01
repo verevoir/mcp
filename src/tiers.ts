@@ -229,6 +229,27 @@ export async function tierChat(tier: ModelClass): Promise<TierChat | null> {
 }
 
 /**
+ * Resolve an arbitrary model TERM (e.g. `"opus"`, `"haiku"`, `"deepseek"`) to a
+ * usable ChatFn + id + provider, routing to whichever provider actually serves
+ * it. Unlike {@link tierChat} — which is env-configured and, for the extraction
+ * tier, locked to the single configured worker (e.g. SambaNova, which serves
+ * DeepSeek but NOT Anthropic's opus/haiku) — this follows the term to its real
+ * provider. It's what a coordinator's up/down override needs: "route this up to
+ * opus" must reach Anthropic, not the worker. Returns null when no registered
+ * provider serves the term.
+ */
+export async function termChat(term: string): Promise<TierChat | null> {
+  await warmRegistry();
+  const entry = resolveModelByTerm(term);
+  if (!entry) return null;
+  const adapter = await importProviderAdapter(entry.provider);
+  if (!adapter) return null;
+  const mod = adapter as { chat?: ChatFn };
+  if (typeof mod.chat !== 'function') return null;
+  return { chat: mod.chat, modelId: entry.currentId, provider: entry.provider };
+}
+
+/**
  * The description of which reasoning providers are supported + configured,
  * for surface in tool descriptions. Mirrors provision.ts's
  * `reasoningProvidersSummary` but scoped to the tier system.

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { warmRegistry } from '../src/registry.js';
 import { roleOf, aggregateCost, type RecordedCall } from '../src/coordinator-cost/cost.js';
 import { collectTokens, buildChecklist, judgeQuality } from '../src/coordinator-cost/quality.js';
 
@@ -74,6 +75,26 @@ describe('aggregateCost — rolls recorded calls into a per-tier breakdown', () 
     ];
     const roles = aggregateCost(calls, COORD).perModel.map((m) => m.role);
     expect(roles).toEqual(['coordinator', 'reasoning', 'worker', 'light']);
+  });
+
+  it('prices cache-read far below fresh input, not as fresh input (metering fix)', async () => {
+    // A coordinator re-sends its whole context each loop turn, so most of its
+    // "input" is cache-read. Pricing it as fresh input overstated the seat cost
+    // by ~an order of magnitude (opus: $51 vs the real ~$10-15).
+    await warmRegistry(); // pricing needs the catalog loaded
+    const M = 'claude-opus-4-8'; // input rate $15/M; cache-read defaults to ~1/10th
+    const fresh = aggregateCost(
+      [{ tool: 'loop', model: M, tokensIn: 100_000, tokensOut: 0, ms: 1 }],
+      'mistral-small-latest'
+    ).totalCostUSD;
+    const cached = aggregateCost(
+      [{ tool: 'loop', model: M, tokensIn: 0, tokensOut: 0, cacheRead: 100_000, ms: 1 }],
+      'mistral-small-latest'
+    ).totalCostUSD;
+    expect(fresh).toBeGreaterThan(0);
+    expect(cached).toBeGreaterThan(0);
+    // cache-read is materially cheaper than fresh input — the whole point.
+    expect(cached).toBeLessThan(fresh * 0.5);
   });
 
   it('is fully costed only when every model that ran had a catalog rate', () => {
