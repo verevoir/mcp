@@ -203,13 +203,17 @@ export async function enactCapability(
   return `${enactmentHeader(descriptor, verify, gateVerifier ? descriptor.verify : undefined)}\n\n${body}`;
 }
 
+/** The `enact_capability` tool description — exported so the tool-discovery
+ * eval (STDIO-517) presents the real steer surface, not a paraphrase. */
+export const ENACT_DESCRIPTION =
+  "Enact a named capability against a directive — the governed, verified, tiered way to get a piece of bounded work produced. You name a CAPABILITY (a corpus descriptor — what a good output looks like) and a DIRECTIVE (what to produce, in this project). The tool then provisions the bar for that work and sends it down with the task, produces the result on the cheaper worker tier, and (by default) verifies it against the bar on the reasoning tier — looping the worker on the review's findings until it passes or a small cap is hit. Use this for work a capability covers (e.g. converting a design system to tokens, scaffolding a service) instead of doing the bulk yourself on the reasoning tier: the cheaper tier and the quality bar are applied structurally, not left to per-turn judgement. Returns the produced result, with a header recording what was enacted. Unknown capability names return the available list rather than failing.";
+
 /** Register the `enact_capability` tool — the structural executor. */
 export function registerEnactTool(server: McpServer): void {
   server.registerTool(
     'enact_capability',
     {
-      description:
-        "Enact a named capability against a directive — the governed, verified, tiered way to get a piece of bounded work produced. You name a CAPABILITY (a corpus descriptor — what a good output looks like) and a DIRECTIVE (what to produce, in this project). The tool then provisions the bar for that work and sends it down with the task, produces the result on the cheaper worker tier, and (by default) verifies it against the bar on the reasoning tier — looping the worker on the review's findings until it passes or a small cap is hit. Use this for work a capability covers (e.g. converting a design system to tokens, scaffolding a service) instead of doing the bulk yourself on the reasoning tier: the cheaper tier and the quality bar are applied structurally, not left to per-turn judgement. Returns the produced result, with a header recording what was enacted. Unknown capability names return the available list rather than failing.",
+      description: ENACT_DESCRIPTION,
       inputSchema: {
         capability: z
           .string()
