@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.70.0 — 2026-07-01
+
+- **Eval + coordinator harnesses land** (STDIO-519, STDIO-520). Dev-only measurement tooling — no change to the runtime tools, the steer, or the published API — bumped so main is publishable again (0.69.0 merged these without a version delta, leaving main stuck). STDIO-519: the mistral-coordinator harness (does a cheap coordinator route the inverted tier — up to opus, enact capability work, down to haiku). STDIO-520: the tool-discovery eval gains a `run_shell` native competitor + a `read`-defection task, making it PREDICT the wild — models route production but defect to native shell for the fetch.
+
 ## 0.69.0 — 2026-07-01
 
 - **Tool-discovery eval — do reasoning models route to our tools?** (STDIO-517). A cheap smoke test + diagnostic: per (model × task), one `chatWithTools` call (single move, tools NOT executed), score the first move against an expected routing verdict, and on a FAILURE interrogate the model's reasoning (tagged salience / trust / legitimate). Four tasks (capability→enact, bulk→delegate, coupled→route-not-self-generate, surgical→inline). `npm run eval:tool-discovery` (`--models`, `--no-steer`) prints a matrix + a failures-with-reasoning section. Exported the enact/delegate/dispatch tool descriptions as constants so the eval presents the real surface. First result: opus 4/4, sonnet routes all substantial work, mistral/deepseek route the coupled task but keep capability/bulk in-house — the coordinator floor. Validates the 0.68 delegation-discovery steer for coordinator-grade models.
