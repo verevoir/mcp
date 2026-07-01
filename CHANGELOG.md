@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.71.0 — 2026-07-01
+
+- **Coordinator cost×quality harness** (STDIO-521). The un-stubbed sibling of the 519 harness: drives a coordinator (mistral / opus / sonnet) over the real design workload with an executor that RUNS the tools it calls — real enact/delegate with the up→opus / down→haiku model override — capturing per-model token usage into a tier cost breakdown (coordinator vs reasoning vs light vs worker, priced from catalog rates) and running the produced DTCG tokens through the shared design-gate + a done-well checklist. Answers "does mistral coordinating cost less than opus/sonnet, and is the output as good?" Dev tooling, real execution (run with keys, not in CI); pure cost + checklist logic unit-tested.
+
 ## 0.70.0 — 2026-07-01
 
 - **Eval + coordinator harnesses land** (STDIO-519, STDIO-520). Dev-only measurement tooling — no change to the runtime tools, the steer, or the published API — bumped so main is publishable again (0.69.0 merged these without a version delta, leaving main stuck). STDIO-519: the mistral-coordinator harness (does a cheap coordinator route the inverted tier — up to opus, enact capability work, down to haiku). STDIO-520: the tool-discovery eval gains a `run_shell` native competitor + a `read`-defection task, making it PREDICT the wild — models route production but defect to native shell for the fetch.
