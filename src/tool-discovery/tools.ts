@@ -8,6 +8,13 @@
 // would have nowhere to be wrong; the inline tools are what make
 // over-delegation and self-generation observable.
 //
+// STDIO-520 — the toolset also carries a NATIVE competitor (run_shell): the
+// direct, ungoverned way a model produces work itself. The old eval offered
+// only substrate tools, so it measured "substrate vs nothing" and over-predicted
+// routing; the wild run showed models defect to the native shell when it's
+// there. Presenting run_shell makes the eval measure the real choice —
+// substrate vs native — and predictive of the wild.
+//
 // The routing descriptions/schemas are lifted from the tools' own source
 // (enact.ts / delegate.ts / dispatch.ts) so the eval tracks the real steer
 // surface. delegate's live host summary is omitted — the eval presents the
@@ -117,8 +124,27 @@ const EDIT_FILE_TOOL: ToolDef = {
   },
 };
 
+const RUN_SHELL_TOOL: ToolDef = {
+  name: 'run_shell',
+  description:
+    "Run a shell command to fetch, read, transform, or produce files yourself — the native, direct way (does not go through the substrate's bar, tiering, or gate).",
+  input_schema: {
+    type: OBJECT,
+    properties: {
+      command: { type: 'string', description: 'The shell command to run.' },
+    },
+    required: ['command'],
+  },
+};
+
+/** The native competitor: producing work directly in-host, bypassing the
+ * substrate's governed/tiered/gated path entirely. On a `route` task, reaching
+ * for this is a DEFECTION to native — the wild failure the eval now measures. */
+export const NATIVE_TOOLS = ['run_shell'] as const;
+
 /** The full toolset presented to the model: routing tools first, then the
- * inline alternatives — the model has a real choice on every task. */
+ * inline alternatives, then the native competitor — the model has a real choice
+ * between substrate and native on every task. */
 export const PRESENTED_TOOLS: ToolDef[] = [
   ENACT_TOOL,
   DELEGATE_TOOL,
@@ -126,4 +152,5 @@ export const PRESENTED_TOOLS: ToolDef[] = [
   WRITE_FILE_TOOL,
   READ_FILE_TOOL,
   EDIT_FILE_TOOL,
+  RUN_SHELL_TOOL,
 ];

@@ -3,10 +3,29 @@
 // what this returns.
 
 import { TASKS, type Task } from './tasks.js';
+import { NATIVE_TOOLS } from './tools.js';
 import type { CellResult, ModelResult } from './run.js';
 
 const PASS = '✓';
 const FAIL = '✗';
+
+/** How a `route` task's failure went — the distinction the wild run surfaced.
+ * `native` = defected to the native shell (run_shell); `self` = produced the
+ * work inline itself (write_file / edit_file); `other` = any other non-routing
+ * miss (e.g. a plain reply). Named so the report can show which way, since
+ * native-shell defection specifically is the finding. */
+export function routeFailureKind(cell: CellResult): 'native' | 'self' | 'other' {
+  if ((NATIVE_TOOLS as readonly string[]).includes(cell.firstMove)) return 'native';
+  if (cell.firstMove === 'write_file' || cell.firstMove === 'edit_file') return 'self';
+  return 'other';
+}
+
+/** The report label for each route-failure kind. */
+const ROUTE_FAILURE_LABEL: Record<ReturnType<typeof routeFailureKind>, string> = {
+  native: 'native-shell',
+  self: 'self-inline',
+  other: 'other',
+};
 
 /** A cell's matrix glyph: ✓/✗ for a real verdict, `–` for a run failure
  * (unsupported / error) that could neither pass nor fail. */
@@ -122,7 +141,11 @@ export function renderFailures(results: ModelResult[], tasks: Task[] = TASKS): s
     for (const c of failed) {
       const task = taskById.get(c.taskId);
       const tag = tagReasoning(c.reasoning ?? '');
-      lines.push(`  • [${c.taskId}] ${c.score.reason}  (tag: ${tag})`);
+      // On a route task, name which way the failure went — native-shell
+      // defection vs self-produced inline — since that's the interesting split.
+      const wayBit =
+        task?.verdict === 'route' ? ` (${ROUTE_FAILURE_LABEL[routeFailureKind(c)]})` : '';
+      lines.push(`  • [${c.taskId}]${wayBit} ${c.score.reason}  (tag: ${tag})`);
       if (task) lines.push(`    task: ${task.prompt}`);
       lines.push(`    reasoning: ${c.reasoning}`);
     }
