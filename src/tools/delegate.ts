@@ -582,15 +582,19 @@ export async function workerSummary(
   );
 }
 
+/** The `delegate` tool description (sans the live host summary) — exported so
+ * the tool-discovery eval (STDIO-517) presents the real steer surface. The
+ * registered tool appends the per-host `workerSummary()` to this base. */
+export const DELEGATE_DESCRIPTION =
+  "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. To run a task on a SPECIFIC model (e.g. the user says \"use deepseek to review this\"), pass `model` set to one of the worker's served models named in this description. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Set `verify: true` to put the worker's output through an antagonistic review on the reasoning tier (looping the worker on the review's findings) before it is returned. Append token + cost metering with `meter` (or set it once via the AIGENCY_METER env). Returns the worker's text, or a short notice if no worker is configured for this project. ";
+
 /** Register the `delegate` tool — the coordinator→worker connector. */
 export async function registerDelegateTool(server: McpServer): Promise<void> {
   const summary = await workerSummary();
   server.registerTool(
     'delegate',
     {
-      description:
-        "Delegate a self-contained sub-task to this project's configured worker model and return its result. Use it to offload bounded work from you (the coordinator) to a cheaper worker — put everything the worker needs in `prompt`, as it sees only that, not this conversation. To run a task on a SPECIFIC model (e.g. the user says \"use deepseek to review this\"), pass `model` set to one of the worker's served models named in this description. The practices and capabilities its work is held to travel with the task automatically, provisioned afresh from this worker's own prompt (a worker won't fetch them itself, and the bar must fit the task in hand). Set `governed: false` only for throwaway work that needs no bar. Set `verify: true` to put the worker's output through an antagonistic review on the reasoning tier (looping the worker on the review's findings) before it is returned. Append token + cost metering with `meter` (or set it once via the AIGENCY_METER env). Returns the worker's text, or a short notice if no worker is configured for this project. " +
-        summary,
+      description: DELEGATE_DESCRIPTION + summary,
       inputSchema: {
         prompt: z
           .string()

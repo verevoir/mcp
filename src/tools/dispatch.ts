@@ -646,14 +646,18 @@ export function formatJob(job: DispatchJob | { error: string }): string {
   return job.result ?? '(done, no output)';
 }
 
+/** The `dispatch` tool description — exported so the tool-discovery eval
+ * (STDIO-517) presents the real steer surface, not a paraphrase. */
+export const DISPATCH_DESCRIPTION =
+  'Hand a whole task to a FRONTIER worker model (e.g. DeepSeek) and let it drive: it gets a toolbelt (read_file, grep, find_symbol, provision, and write_file/edit_file when the task calls for changes) and works autonomously over a source — exploring, pulling its own practices, reading real code, and producing or changing it. Runs can be slow (each round is a full worker call) and it emits progress as it goes — for a large task on a slow/hosted model that would exceed a synchronous tool-call timeout, use `dispatch_start` (background) + `dispatch_result` (poll) instead. Use this (not `delegate`) when you want the worker to do the agentic work itself rather than judge a pre-chewed prompt. Set `verify: true` to put the worker\'s output through an antagonistic review on the reasoning tier and re-run it on the findings before returning. `model` is a family or id (e.g. "deepseek"); `source` is the repo/path it works over.';
+
 /** Register the `dispatch` tool — run a frontier non-Claude model as an MCP
  * agent over a source, with a read-only toolbelt it drives itself. */
 export function registerDispatchTool(server: McpServer): void {
   server.registerTool(
     'dispatch',
     {
-      description:
-        'Hand a whole task to a FRONTIER worker model (e.g. DeepSeek) and let it drive: it gets a toolbelt (read_file, grep, find_symbol, provision, and write_file/edit_file when the task calls for changes) and works autonomously over a source — exploring, pulling its own practices, reading real code, and producing or changing it. Runs can be slow (each round is a full worker call) and it emits progress as it goes — for a large task on a slow/hosted model that would exceed a synchronous tool-call timeout, use `dispatch_start` (background) + `dispatch_result` (poll) instead. Use this (not `delegate`) when you want the worker to do the agentic work itself rather than judge a pre-chewed prompt. Set `verify: true` to put the worker\'s output through an antagonistic review on the reasoning tier and re-run it on the findings before returning. `model` is a family or id (e.g. "deepseek"); `source` is the repo/path it works over.',
+      description: DISPATCH_DESCRIPTION,
       inputSchema: {
         prompt: z.string().describe('The task for the worker — what to produce.'),
         model: z
