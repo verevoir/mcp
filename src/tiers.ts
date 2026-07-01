@@ -110,14 +110,6 @@ const PROVIDER_CHAT_LOADERS: Record<string, () => Promise<{ chat: ChatFn }>> = {
   google: () => import('@verevoir/llm/google'),
 };
 
-/** Load the `chat` function for a known provider, or null when unknown. */
-async function chatForProvider(provider: string): Promise<ChatFn | null> {
-  const loader = PROVIDER_CHAT_LOADERS[provider];
-  if (!loader) return null;
-  const mod = await loader();
-  return mod.chat;
-}
-
 // ── Direct OpenAI-compat chat (for _URI tiers) ─────────────────────────────
 
 /** One chat-completions call to a direct OpenAI-compatible endpoint (the
@@ -149,19 +141,32 @@ async function directCompatChat(
   }
   const json = (await res.json().catch(() => null)) as {
     choices?: { message?: { content?: string } }[];
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      // OpenAI-compat: the cached portion of prompt_tokens, when the endpoint
+      // reports it (SambaNova / vLLM / OpenAI all use this shape).
+      prompt_tokens_details?: { cached_tokens?: number };
+    };
   } | null;
   const content = json?.choices?.[0]?.message?.content;
   if (!content) throw new Error(`tier endpoint returned no content (${modelId})`);
+  // Count the action's real tokens — the worker tier was reporting 0 because this
+  // path hardcoded them. `prompt_tokens` is TOTAL input (incl. any cached), so the
+  // cached slice is split out to be priced as cache-read, not fresh input.
+  const usage = json?.usage;
+  const cached = usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  const promptTokens = usage?.prompt_tokens ?? 0;
   return {
     content,
     usage: {
       provider: 'openai-compat',
       model: modelId,
       direction: 'extraction',
-      inputTokens: 0,
-      outputTokens: 0,
+      inputTokens: Math.max(0, promptTokens - cached),
+      outputTokens: usage?.completion_tokens ?? 0,
       cacheCreationInputTokens: 0,
-      cacheReadInputTokens: 0,
+      cacheReadInputTokens: cached,
     },
     stopReason: 'end_turn',
   };

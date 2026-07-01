@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.73.0 — 2026-07-01
+
+- **Plan-first coordinator** (STDIO-520). An alternative to the improvising tool-loop coordinator: PLAN a DAG up front (a reasoning-tier call selects entry capabilities, `buildPlanGraph` walks the corpus `composes` edges into a topologically-ordered graph), GATE it (inspect before spend — non-empty, acyclic, resolvable), then EXECUTE it **deterministically and in parallel** — `executePlanParallel` layers the DAG by `dependsOn` and runs each layer concurrently (wall-clock = critical-path depth, not node count), threading upstream results and isolating failures. The plan is disposable (kept only for the run). `npm run coord:plan`. First run (opus planner, scoped): a 4-node DAG, 2 deep × 3 wide, gate PASS, all nodes ran. 19 new unit tests.
+- **Count worker action tokens** (STDIO-521). `directCompatChat` (the openai-compat worker path, e.g. SambaNova/DeepSeek) hardcoded usage to 0 — every worker action reported no tokens. Now parses `usage.prompt_tokens`/`completion_tokens` and splits out `prompt_tokens_details.cached_tokens` so cached input is priced as cache-read, not fresh.
+
 ## 0.72.0 — 2026-07-01
 
 - **Coordinator harness: route the tier override by PROVIDER, not through the worker** (STDIO-521 fix). The full-workload runs failed — every up/down delegation returned 0 tokens and no output — because the executor sent the coordinator’s `model` override (`opus`/`haiku`) through `delegateDetailed`, which resolves against the ONE configured worker provider (SambaNova serves DeepSeek, not Anthropic’s opus/haiku). Added `termChat(term)` (resolves any term to whichever provider serves it) and routed delegate/dispatch through a new `runDelegated` that follows the term to its real provider (up→opus, down→haiku, worker→DeepSeek), capturing usage. enact_capability now self-tiers — the coordinator’s tier override is no longer forwarded to it (forwarding it pushed the enact’s worker onto a model its provider can’t serve). Executor routing unit-tested.
