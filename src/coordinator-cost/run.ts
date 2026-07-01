@@ -217,11 +217,13 @@ export async function runCoordination(opts: RunOptions): Promise<RunResult> {
     log.calls.push({
       tool: '(coordinator loop)',
       model: reply.usage.model || resolved.modelId,
-      tokensIn:
-        reply.usage.inputTokens +
-        reply.usage.cacheReadInputTokens +
-        reply.usage.cacheCreationInputTokens,
+      // Keep cache SEPARATE from fresh input — a coordinator re-sends its whole
+      // context each loop turn, so most of this is cache-read; pricing it as
+      // fresh input overstates the seat cost by an order of magnitude.
+      tokensIn: reply.usage.inputTokens,
       tokensOut: reply.usage.outputTokens,
+      cacheRead: reply.usage.cacheReadInputTokens,
+      cacheWrite: reply.usage.cacheCreationInputTokens,
       ms: 0,
     });
 

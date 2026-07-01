@@ -30,8 +30,17 @@ export interface RecordedCall {
   tool: string;
   /** The concrete model id that ran the work, or `'(none)'` for an inline call. */
   model: string;
+  /** FRESH input tokens only — cache read/write are kept separate below so the
+   * cost is priced at their real (cheaper) rates. */
   tokensIn: number;
   tokensOut: number;
+  /** Cache-read / cache-write input tokens, SEPARATE from `tokensIn`. A
+   * coordinator re-sends its whole context each loop turn, so most of its
+   * "input" is cache-read; folding it into `tokensIn` and pricing it as fresh
+   * input massively overstates the coordinator-seat cost (opus: 3.3M priced at
+   * full input = $51, vs the real ~$10-15 with cache priced correctly). */
+  cacheRead?: number;
+  cacheWrite?: number;
   /** Wall-clock for the call, ms. */
   ms: number;
 }
@@ -48,8 +57,11 @@ export interface ModelSpend {
   label: string;
   role: TierRole;
   modelClass: ModelClass | 'unclassified';
+  /** Fresh input tokens (cache read/write are the fields below). */
   tokensIn: number;
   tokensOut: number;
+  cacheRead: number;
+  cacheWrite: number;
   calls: number;
   costUSD: number;
   /** True when no catalog rate priced this model — its `costUSD` is 0 but its
@@ -111,7 +123,14 @@ function ratesFor(usage: PerModelUsage): RatesTable {
 export function aggregateCost(calls: RecordedCall[], coordinatorModel: string): CostBreakdown {
   const byModel = new Map<
     string,
-    { role: TierRole; tokensIn: number; tokensOut: number; calls: number }
+    {
+      role: TierRole;
+      tokensIn: number;
+      tokensOut: number;
+      cacheRead: number;
+      cacheWrite: number;
+      calls: number;
+    }
   >();
 
   for (const call of calls) {
@@ -120,10 +139,14 @@ export function aggregateCost(calls: RecordedCall[], coordinatorModel: string): 
       role: roleOf(call, coordinatorModel),
       tokensIn: 0,
       tokensOut: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
       calls: 0,
     };
     existing.tokensIn += call.tokensIn;
     existing.tokensOut += call.tokensOut;
+    existing.cacheRead += call.cacheRead ?? 0;
+    existing.cacheWrite += call.cacheWrite ?? 0;
     existing.calls += 1;
     byModel.set(call.model, existing);
   }
@@ -135,7 +158,17 @@ export function aggregateCost(calls: RecordedCall[], coordinatorModel: string): 
   let totalCostUSD = 0;
 
   for (const [model, agg] of byModel) {
-    const usage: PerModelUsage = { [model]: { in: agg.tokensIn, out: agg.tokensOut } };
+    // Pass cache read/write to estimateCostUSD so they are priced at their real
+    // (cheaper) rates, not as fresh input — this is what corrects the coordinator
+    // seat's cost (its re-sent context is mostly cache-read).
+    const usage: PerModelUsage = {
+      [model]: {
+        in: agg.tokensIn,
+        out: agg.tokensOut,
+        cacheRead: agg.cacheRead,
+        cacheWrite: agg.cacheWrite,
+      },
+    };
     const rates = ratesFor(usage);
     const priced = model in rates;
     const costUSD = priced ? estimateCostUSD(usage, rates) : 0;
@@ -150,6 +183,8 @@ export function aggregateCost(calls: RecordedCall[], coordinatorModel: string): 
       modelClass: catalogEntryFor(model)?.modelClass ?? 'unclassified',
       tokensIn: agg.tokensIn,
       tokensOut: agg.tokensOut,
+      cacheRead: agg.cacheRead,
+      cacheWrite: agg.cacheWrite,
       calls: agg.calls,
       costUSD,
       uncosted: !priced,

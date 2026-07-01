@@ -97,8 +97,10 @@ function recordUsage(
     log.calls.push({
       tool,
       model,
-      tokensIn: u.in + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0),
+      tokensIn: u.in,
       tokensOut: u.out,
+      cacheRead: u.cacheRead ?? 0,
+      cacheWrite: u.cacheWrite ?? 0,
       ms,
     });
   }

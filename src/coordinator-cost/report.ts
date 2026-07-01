@@ -29,9 +29,18 @@ export function renderCost(cost: CostBreakdown): string {
   if (cost.perModel.length === 0) return '  (no model spend recorded)';
   const lines = cost.perModel.map((m) => {
     const dollars = m.uncosted ? 'uncosted' : `$${m.costUSD.toFixed(4)}`;
+    // Surface cache-read separately — a coordinator's spend is mostly re-sent
+    // (cached) context, and showing it makes the small fresh-input number read
+    // sensibly against the cost.
+    const cache =
+      m.cacheRead || m.cacheWrite
+        ? ` (+${formatTokensCompact(m.cacheRead)} cache-read` +
+          (m.cacheWrite ? `, ${formatTokensCompact(m.cacheWrite)} cache-write` : '') +
+          ')'
+        : '';
     return (
       `  ${ROLE_LABEL[m.role]}: ${m.label} — ` +
-      `${formatTokensCompact(m.tokensIn)} in / ${formatTokensCompact(m.tokensOut)} out ` +
+      `${formatTokensCompact(m.tokensIn)} in${cache} / ${formatTokensCompact(m.tokensOut)} out ` +
       `over ${m.calls} call(s) — ${dollars}`
     );
   });
