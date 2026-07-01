@@ -1,6 +1,6 @@
 {
   "name": "@verevoir/mcp",
-  "version": "0.70.0",
+  "version": "0.71.0",
   "description": "MCP server exposing the Verevoir foundation (cached reads via @verevoir/context + workflow operations via @verevoir/workflows) as tools usable from Claude Code and any other MCP-compatible client.",
   "license": "Apache-2.0",
   "type": "module",
@@ -38,6 +38,7 @@
     "start": "node dist/bin.js",
     "eval:tool-discovery": "node dist/tool-discovery-bin.js",
     "coord:mistral": "node dist/mistral-coordinator-bin.js",
+    "coord:cost": "node dist/coordinator-cost-bin.js",
     "a2a": "node dist/a2a-bin.js",
     "a2a-watch": "node dist/a2a-watch-bin.js",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
