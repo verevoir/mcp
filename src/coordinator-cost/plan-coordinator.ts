@@ -392,10 +392,14 @@ export async function planFirstCoordination(opts: PlanFirstOptions): Promise<Pla
     return abort('could not load the capability corpus — check the guardrails source');
   }
 
+  // Planning is the ONE smart step — plan-first's whole point is plan-smart /
+  // execute-cheap. So entry selection runs on the REASONING tier regardless of
+  // which model is nominally "coordinating" (a cheap coordinator like mistral
+  // can't plan, but it doesn't need to — it just drives the deterministic
+  // execution the reasoning-tier plan hands it).
   const selectEntry =
     opts.selectEntry ??
-    ((req: string, corp: CapabilityDescriptor[]) =>
-      selectEntryTypes(req, corp, resolved.modelClass));
+    ((req: string, corp: CapabilityDescriptor[]) => selectEntryTypes(req, corp, 'reasoning'));
   const entry = await selectEntry(request, corpus).catch(() => [] as string[]);
   if (entry.length === 0) {
     return abort('no entry capability selected for the request');
