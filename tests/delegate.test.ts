@@ -422,7 +422,7 @@ describe('delegate — verify (antagonistic review on the reasoning tier)', () =
     const fix = userTurnOf(fetchMock, 1);
     expect(fix).toContain('WORKER OUTPUT');
     expect(fix).toContain('no error-path coverage');
-    expect(fix).toContain('Output only the corrected');
+    expect(fix).toContain('Change ONLY what these findings require');
     expect(out).toContain('WORKER OUTPUT');
     expect(out).toContain('reviewed on fake-reasoner (reasoning): approved after 2 attempt(s)');
   });

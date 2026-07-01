@@ -171,6 +171,13 @@ export async function enactCapability(
     prompt,
     governed: true,
     verify,
+    // A gated capability's deterministic gate gives precise, actionable findings
+    // (the exact wrong schema, the exact unresolved refs), so the loop makes real
+    // progress each round and converges with a few more of them. The review-only
+    // default (3) can stop a complex artefact a finding short even as it fixes the
+    // hard structural defects — observed: a full token set reached correct schema
+    // + zero unresolved refs at attempt 3, still one finding from approved.
+    verifyAttempts: gateVerifier ? 6 : undefined,
     model: input.model,
     meter: input.meter,
     spanCtx: { traceId: span.traceId, parentId: span.spanId, purpose: span.purpose },

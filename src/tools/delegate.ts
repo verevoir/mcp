@@ -97,6 +97,11 @@ export async function delegateDetailed(
     model?: string;
     governed?: boolean;
     verify?: boolean;
+    /** Cap on produce→verify attempts (defaults to runWithVerify's). A gated
+     * capability's deterministic gate gives PRECISE findings, so extra rounds
+     * converge rather than flail — the enact raises this for the gated path,
+     * where the fuzzy review-only default (3) can run out a finding short. */
+    verifyAttempts?: number;
     /** Audit span context to thread the cascade (optional; omit for standalone calls). */
     spanCtx?: SpanContext;
   },
@@ -292,7 +297,14 @@ export async function delegateDetailed(
     capSpan.finish();
     return r;
   }
-  const reviewed = await runReviewed(input.prompt, model, callWorker, makeReviewer, elapsed);
+  const reviewed = await runReviewed(
+    input.prompt,
+    model,
+    callWorker,
+    makeReviewer,
+    elapsed,
+    input.verifyAttempts
+  );
   // Finish the capability span; on the verify path include a cost rollup when
   // usage was reported.
   const totalUsage = reviewed.usages ?? (reviewed.usage ? [reviewed.usage] : []);
@@ -337,10 +349,13 @@ function withReviewFindings(
     `--- your previous attempt failed automated verification ---\n` +
     `Your previous output:\n\n${previousOutput}\n\n` +
     `It failed these blocking checks:\n\n${formatFindings(findings)}\n\n` +
-    `Apply every fix above and return the COMPLETE corrected artifact — the work ` +
-    `itself (e.g. the full token JSON), and NOTHING else. Do not explain, do not ` +
-    `discuss the feedback, do not describe your changes. Output only the corrected ` +
-    `work; it is not done until every check passes.`
+    `Change ONLY what these findings require. Everything else in your previous ` +
+    `output — especially anything already correct (the $schema, resolving aliases, ` +
+    `valid tokens) — MUST stay identical; do NOT regenerate or "improve" it, or you ` +
+    `will reintroduce defects you already fixed and the loop will never converge. ` +
+    `Return the COMPLETE corrected artifact (the full token JSON) and NOTHING else — ` +
+    `no explanation, no commentary. It is not done until every check passes AND ` +
+    `nothing previously correct has regressed.`
   );
 }
 
@@ -366,7 +381,8 @@ async function runReviewed(
   model: string,
   callWorker: (userContent: string) => Promise<WorkerCall>,
   makeReviewer: (artefact?: string) => Promise<Reviewer | null>,
-  elapsed: () => number
+  elapsed: () => number,
+  maxAttempts?: number
 ): Promise<WorkerCall> {
   const first = await callWorker(prompt);
   // An unreachable / erroring worker isn't a review failure — return it as-is.
@@ -412,6 +428,7 @@ async function runReviewed(
     const outcome = await runWithVerify({
       capability: 'delegate',
       verify: 'adversarial-review',
+      maxAttempts,
       produce: async ({ findings, attempt }) => {
         lastFindings = findings;
         // Reuse the call already made for attempt 1; later attempts re-produce
