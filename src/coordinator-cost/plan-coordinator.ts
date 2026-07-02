@@ -22,7 +22,18 @@
 import type { ModelClass, PerModelUsage } from '@verevoir/llm';
 import { sumUsages } from '@verevoir/llm';
 import type { CapabilityDescriptor } from '@verevoir/recipes';
-import { buildPlanGraph, type ExecutionPlan, type PlanNode } from '@verevoir/recipes/engine';
+import {
+  buildExecutionPlan,
+  executePlanParallel,
+  gatePlan,
+  parseEntrySelection,
+  type ExecutionPlan,
+  type GateVerdict,
+  type NodeRun,
+  type PlanExecDeps,
+  type PlanExecResult,
+  type PlanNode,
+} from '@verevoir/recipes/engine';
 import { enactCapability } from '../tools/enact.js';
 import { delegateDetailed, type WorkerCall, type delegate } from '../tools/delegate.js';
 import { loadCapabilityCorpus } from '../tools/provision.js';
@@ -31,12 +42,6 @@ import { resolveCoordinator } from './run.js';
 import { aggregateCost, type CostBreakdown, type RecordedCall } from './cost.js';
 import { judgeQuality, type QualityVerdict } from './quality.js';
 import { taskFor } from './task.js';
-import {
-  executePlanParallel,
-  type NodeRun,
-  type PlanExecDeps,
-  type PlanExecResult,
-} from './plan-executor.js';
 
 /** A text-returning `delegate` — the signature enact injects; shared parameter
  * list with `delegateDetailed`, so the harness wraps one as the other. */
@@ -111,79 +116,6 @@ export async function enactNode(
   };
 }
 
-/** A gate verdict over a plan: whether it's safe to spend on, and the findings
- * that failed it. `ok` false means the plan should be aborted, not executed. */
-export interface GateVerdict {
-  ok: boolean;
-  findings: string[];
-}
-
-/**
- * Gate a plan before any spend — the "inspect before you spend" control point.
- * PURE. A plan passes only when:
- *  - it has at least one node (an empty plan produces nothing);
- *  - every entry capability resolves to a node in the plan;
- *  - no node depends on a capability the plan doesn't contain (a dangling edge);
- *  - the plan is acyclic — topologically orderable via its `dependsOn` edges.
- *
- * buildPlanGraph already topologically orders and drops unresolvable edges, so a
- * gate failure here signals a plan built some other way, or a corpus/entry
- * mismatch. Findings name what failed so the caller can abort legibly.
- */
-export function gatePlan(plan: ExecutionPlan): GateVerdict {
-  const findings: string[] = [];
-  const present = new Set(plan.nodes.map((n) => n.capability));
-
-  if (plan.nodes.length === 0) {
-    findings.push('plan is empty — no capabilities to execute');
-  }
-
-  for (const entry of plan.entry) {
-    if (!present.has(entry)) {
-      findings.push(`entry capability "${entry}" has no node in the plan`);
-    }
-  }
-
-  for (const node of plan.nodes) {
-    for (const dep of node.dependsOn) {
-      if (!present.has(dep)) {
-        findings.push(`node "${node.capability}" depends on missing capability "${dep}"`);
-      }
-    }
-  }
-
-  if (!isAcyclic(plan.nodes)) {
-    findings.push('plan has a dependency cycle — it cannot be topologically ordered');
-  }
-
-  return { ok: findings.length === 0, findings };
-}
-
-/** Whether a node set's `dependsOn` edges form a DAG — a Kahn peel that consumes
- * every node iff there is no cycle. Edges to absent capabilities are ignored here
- * (the dangling-dep check reports those); this asks only about cyclicity. */
-function isAcyclic(nodes: PlanNode[]): boolean {
-  const present = new Set(nodes.map((n) => n.capability));
-  const indeg = new Map<string, number>();
-  for (const n of nodes) {
-    indeg.set(n.capability, n.dependsOn.filter((d) => present.has(d)).length);
-  }
-  const ready = nodes.filter((n) => (indeg.get(n.capability) ?? 0) === 0).map((n) => n.capability);
-  let consumed = 0;
-  while (ready.length > 0) {
-    const t = ready.pop()!;
-    consumed++;
-    for (const n of nodes) {
-      if (n.dependsOn.includes(t)) {
-        const d = (indeg.get(n.capability) ?? 0) - 1;
-        indeg.set(n.capability, d);
-        if (d === 0) ready.push(n.capability);
-      }
-    }
-  }
-  return consumed === nodes.length;
-}
-
 /** System prompt for the entry-selection call — a leaner sibling of recipes'
  * NARROW_SYSTEM_PROMPT: no high-recall retrieval step here, so the model sees the
  * WHOLE corpus's entry types and picks the ones the request genuinely calls for.
@@ -197,18 +129,6 @@ Rules:
 - Use the capability ids exactly as written in the list.
 
 Reply with ONLY the selected ids, one per line, each prefixed with "- ". No commentary.`;
-
-/** Parse selected ids from a model reply, matching only against the supplied id
- * set, order preserved by the corpus. Word-boundary anchored so a hyphenated id
- * doesn't fire on its substrings (same rule as recipes' parseSelectedIds). */
-export function parseEntrySelection(text: string, ids: string[]): string[] {
-  const out: string[] = [];
-  for (const id of ids) {
-    const re = new RegExp(`(?<![a-z-])${id}(?![a-z-])`);
-    if (re.test(text) && !out.includes(id)) out.push(id);
-  }
-  return out;
-}
 
 /** A reasoning-tier chat call: request + the corpus's capability menu → the entry
  * ids the request calls for. */
@@ -266,28 +186,6 @@ async function resolveSelectChat(modelClass: ModelClass): Promise<SelectChat | n
   const tier = await tierChat(modelClass).catch(() => null);
   if (!tier) return null;
   return (opts) => tier.chat(opts);
-}
-
-/** Build an ExecutionPlan from buildPlanGraph's output. Practices are `[]` for
- * v1 — the plan-first arm measures cost + parallel structure, not per-node
- * provisioning (that's `planExecution`'s job, which needs an embedder). */
-export function buildExecutionPlan(
-  request: string,
-  entry: string[],
-  corpus: CapabilityDescriptor[]
-): ExecutionPlan {
-  const graph = buildPlanGraph(entry, corpus);
-  const nodes: PlanNode[] = graph.map((g) => ({
-    capability: g.capability,
-    practices: [],
-    dependsOn: g.dependsOn,
-    source: g.source,
-  }));
-  return {
-    request,
-    entry: graph.filter((g) => g.source === 'retrieved').map((g) => g.capability),
-    nodes,
-  };
 }
 
 export interface PlanFirstOptions {
