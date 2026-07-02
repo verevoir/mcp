@@ -111,6 +111,19 @@ export interface EnactInput {
   spanCtx?: SpanContext;
 }
 
+/** For a GATED capability, the deterministic gate owns structure + validity, so
+ * the reasoning review is narrowed to material fidelity — otherwise it re-flags
+ * structure / naming / completeness as blocking and never converges on a correct
+ * artefact. The antagonist prompt is already material-only for code; this maps
+ * "material" onto a gated artefact whose structural bar the gate already holds. */
+const GATED_REVIEW_RUBRIC =
+  `A deterministic gate has ALREADY verified this artefact's structure and validity — ` +
+  `do not re-check or re-flag those. Review ONLY material FIDELITY: are the values correct ` +
+  `and faithful to the source, and is any explicitly stated requirement genuinely unmet? ` +
+  `APPROVE unless a value is materially wrong or a real stated requirement is missing. Do ` +
+  `NOT block on completeness beyond what was asked, naming, formatting, structure, or design ` +
+  `taste — those are the gate's domain, or are not blocking defects.`;
+
 /**
  * Enact a capability: load its descriptor, fold its intent into a self-contained
  * task, and run it governed + verified on the worker tier. Never throws — an
@@ -171,6 +184,13 @@ export async function enactCapability(
     prompt,
     governed: true,
     verify,
+    // A gated capability's deterministic gate gives precise, actionable findings
+    // (the exact wrong schema, the exact unresolved refs), so the loop makes real
+    // progress each round and converges with a few more of them. The review-only
+    // default (3) can stop a complex artefact a finding short even as it fixes the
+    // hard structural defects — observed: a full token set reached correct schema
+    // + zero unresolved refs at attempt 3, still one finding from approved.
+    verifyAttempts: gateVerifier ? 6 : undefined,
     model: input.model,
     meter: input.meter,
     spanCtx: { traceId: span.traceId, parentId: span.spanId, purpose: span.purpose },
@@ -182,7 +202,17 @@ export async function enactCapability(
   // deterministic, zero tokens). Degrades to gate-only if no reasoning tier.
   const makeGatedReviewer = gateVerifier
     ? async (artefact?: string): Promise<Reviewer | null> => {
-        const review = await makeReasoningReviewerFn(artefact).catch(() => null);
+        // The deterministic gate already owns STRUCTURE + validity, so narrow the
+        // review to what only judgement can catch: material FIDELITY. Without this
+        // the review re-litigates structure/completeness/naming as if reviewing
+        // code, manufacturing a wandering set of nit "defects" that block a
+        // structurally-correct artefact forever. The antagonist prompt is already
+        // material-only for CODE; this maps "material" onto a gated artefact.
+        const review = await makeReasoningReviewerFn(
+          artefact,
+          undefined,
+          GATED_REVIEW_RUBRIC
+        ).catch(() => null);
         const verifier: Verifier = async (vInput) => {
           const g = await gateVerifier(vInput);
           if (!g.ok) return g;

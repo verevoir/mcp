@@ -7,6 +7,7 @@ import {
   workerSummary,
   resolveWorkerModel,
   clearWorkerModelsCache,
+  applyEdits,
 } from '../src/tools/delegate.js';
 import { roundUsage } from '../src/metering.js';
 import type { Reviewer } from '../src/tools/review.js';
@@ -416,13 +417,14 @@ describe('delegate — verify (antagonistic review on the reasoning tier)', () =
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(2); // initial + one fix re-produce
-    // the re-produce threads the worker's own previous output back in (fix, not
-    // blind regenerate), the findings, and a demand for the corrected artifact
-    // only — a smaller worker otherwise derails into discussing the feedback.
+    // the re-produce threads the worker's own previous output back in and asks for
+    // a PATCH (a JSON array of targeted edits), not a rewrite — so a fix can't
+    // regress what it doesn't touch. The worker here returns no edit array, so the
+    // loop falls back to its raw response, which the verdict then approves.
     const fix = userTurnOf(fetchMock, 1);
     expect(fix).toContain('WORKER OUTPUT');
     expect(fix).toContain('no error-path coverage');
-    expect(fix).toContain('Output only the corrected');
+    expect(fix).toContain('JSON array of EDITS');
     expect(out).toContain('WORKER OUTPUT');
     expect(out).toContain('reviewed on fake-reasoner (reasoning): approved after 2 attempt(s)');
   });
@@ -639,5 +641,37 @@ describe('delegate — verify (antagonistic review on the reasoning tier)', () =
 
     expect(out).toContain('verify could not run'); // the reviewer blew up
     expect(out).toContain('Verify Reasoner'); // but its already-incurred tokens are still metered
+  });
+});
+
+describe('applyEdits — patch-based re-produce', () => {
+  it('applies a matching edit and leaves everything else byte-identical', () => {
+    const prev = '{"$schema":"WRONG","color":{"brand":{"$value":"#1d70b8"}}}';
+    const resp = '[{"find":"WRONG","replace":"RIGHT"}]';
+    expect(applyEdits(prev, resp)).toBe(
+      '{"$schema":"RIGHT","color":{"brand":{"$value":"#1d70b8"}}}'
+    );
+  });
+
+  it('cannot regress a field the edits do not name (the preservation guarantee)', () => {
+    const prev = '{"$schema":"RIGHT","x":1}';
+    const resp = '[{"find":"\\"x\\":1","replace":"\\"x\\":2"}]';
+    const out = applyEdits(prev, resp)!;
+    expect(out).toContain('"$schema":"RIGHT"'); // untouched → preserved by construction
+    expect(out).toContain('"x":2');
+  });
+
+  it('returns null when the response has no edit array, so the caller can fall back', () => {
+    expect(applyEdits('{"a":1}', 'here is the full artifact {"a":2}')).toBeNull();
+  });
+
+  it('returns null when no edit find matches (nothing applied)', () => {
+    expect(applyEdits('{"a":1}', '[{"find":"NOPE","replace":"x"}]')).toBeNull();
+  });
+
+  it('tolerates a fenced edit array', () => {
+    expect(applyEdits('a WRONG b', '```json\n[{"find":"WRONG","replace":"OK"}]\n```')).toBe(
+      'a OK b'
+    );
   });
 });
