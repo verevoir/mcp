@@ -334,12 +334,14 @@ export async function delegateDetailed(
   return reviewed;
 }
 
-/** The directive for a verify re-produce: the original task, the worker's own
- * previous output, and the blocking findings — with a hard instruction to return
- * ONLY the corrected artifact. Threading the previous output makes this a fix, not
- * a blind regenerate; demanding artifact-only output stops a smaller worker
- * derailing into a discussion of the feedback instead of re-producing the work. */
-function withReviewFindings(
+/** The directive for a verify re-produce as a PATCH, not a rewrite: the task, the
+ * worker's own previous output, the findings, and a demand for a JSON array of
+ * targeted edits. A rewrite regenerates the whole artefact each round and drops
+ * fields it had already got right — the loop oscillates and never converges (seen
+ * live on a full DTCG set, on DeepSeek AND sonnet). An edit can only touch what it
+ * names, so the correct-and-untouched parts are preserved by the OPERATION, not by
+ * hoping the model leaves them alone; convergence becomes monotonic. */
+function withPatchRequest(
   prompt: string,
   previousOutput: string,
   findings: VerifyFinding[]
@@ -349,14 +351,71 @@ function withReviewFindings(
     `--- your previous attempt failed automated verification ---\n` +
     `Your previous output:\n\n${previousOutput}\n\n` +
     `It failed these blocking checks:\n\n${formatFindings(findings)}\n\n` +
-    `Change ONLY what these findings require. Everything else in your previous ` +
-    `output — especially anything already correct (the $schema, resolving aliases, ` +
-    `valid tokens) — MUST stay identical; do NOT regenerate or "improve" it, or you ` +
-    `will reintroduce defects you already fixed and the loop will never converge. ` +
-    `Return the COMPLETE corrected artifact (the full token JSON) and NOTHING else — ` +
-    `no explanation, no commentary. It is not done until every check passes AND ` +
-    `nothing previously correct has regressed.`
+    `Return a JSON array of EDITS that fix ONLY these findings — nothing else. Each ` +
+    `edit is {"find": "<verbatim text from your previous output>", "replace": ` +
+    `"<the corrected text>"}. The "find" string MUST appear EXACTLY in your previous ` +
+    `output — copy it verbatim, including punctuation and whitespace. Make the ` +
+    `smallest edits that clear the findings and touch nothing already correct. ` +
+    `Return ONLY the JSON array — no prose, no code fence, no commentary.`
   );
+}
+
+/** Parse a JSON array of {find, replace} edits from a worker response — the first
+ * bracketed block (fenced or bare) that parses as an array. Tolerant of a fence or
+ * surrounding prose. Null when none is found. */
+function extractEditArray(text: string): { find: string; replace: string }[] | null {
+  const candidates: string[] = [];
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) candidates.push(fence[1].trim());
+  const start = text.indexOf('[');
+  if (start >= 0) {
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+      const c = text[i];
+      if (c === '[') depth++;
+      else if (c === ']') {
+        depth--;
+        if (depth === 0) {
+          candidates.push(text.slice(start, i + 1));
+          break;
+        }
+      }
+    }
+  }
+  for (const c of candidates) {
+    try {
+      const v = JSON.parse(c);
+      if (Array.isArray(v)) return v as { find: string; replace: string }[];
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+
+/** Apply the worker's edits to its previous artefact: each edit whose `find`
+ * appears verbatim replaces its first occurrence. Returns the patched artefact
+ * when at least one edit applied, else null — so the caller can fall back to the
+ * raw response (e.g. a worker that returned a full artefact instead of edits). The
+ * preservation is structural: an edit cannot change what it does not name. */
+export function applyEdits(previous: string, response: string): string | null {
+  const edits = extractEditArray(response);
+  if (!edits) return null;
+  let out = previous;
+  let applied = 0;
+  for (const e of edits) {
+    if (
+      e &&
+      typeof e.find === 'string' &&
+      typeof e.replace === 'string' &&
+      e.find.length > 0 &&
+      out.includes(e.find)
+    ) {
+      out = out.replace(e.find, e.replace);
+      applied++;
+    }
+  }
+  return applied > 0 ? out : null;
 }
 
 /**
@@ -431,19 +490,28 @@ async function runReviewed(
       maxAttempts,
       produce: async ({ findings, attempt }) => {
         lastFindings = findings;
-        // Reuse the call already made for attempt 1; later attempts re-produce
-        // with the previous output and the findings folded in.
+        // Reuse the call already made for attempt 1 (a full first artefact); later
+        // attempts ask for a PATCH against the previous output.
         if (attempt === 1 && !firstConsumed) {
           firstConsumed = true;
           return first.text;
         }
-        const call = await callWorker(withReviewFindings(prompt, lastOutput, findings));
+        const call = await callWorker(withPatchRequest(prompt, lastOutput, findings));
         // A worker that dies mid-fix must not have its error string reviewed (and
         // possibly approved) — stop and surface the last good result instead.
         if (!call.ok) throw new ReproduceFailed(call);
         if (call.usage) workerUsages.push(call.usage);
-        lastOutput = call.text;
-        return call.text;
+        // Apply the edits to the previous artefact — a patch can't regress what it
+        // doesn't name, so untouched-and-correct parts survive by construction.
+        // If nothing applied (edits whose `find` didn't match, or a response that
+        // isn't a valid artefact), KEEP the last good artefact — never overwrite it
+        // with the raw response, which may be the edit-JSON itself and would feed
+        // the next round garbage as its "previous output". Attempt 1 is always a
+        // full artefact, so lastOutput is a valid thing to fall back to; a
+        // no-progress round simply re-presents the same findings for another try.
+        const patched = applyEdits(lastOutput, call.text);
+        lastOutput = patched ?? lastOutput;
+        return lastOutput;
       },
       verifier: reviewer.verifier,
     });
