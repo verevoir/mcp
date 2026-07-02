@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.75.0 — 2026-07-02
+
+- **Converge the gated verify loop** (STDIO-521). The re-produce asks the worker for a JSON array of `{find,replace}` **edits** against its own previous output (`applyEdits` applies them deterministically), not a fresh artefact — a patch can't regress what it doesn't name, so structure converges monotonically where a rewrite-per-round loop oscillated forever. A gated capability's reasoning review is narrowed to material **fidelity** (`GATED_REVIEW_RUBRIC`) — the gate owns structure/validity, so the review stops re-litigating structure/naming/completeness and blocks only on real value errors (cut a full DTCG set's blocking findings ~12→6, the residual all genuinely material). Gated verify cap raised to 6. `applyEdits` unit-tested incl. the preservation guarantee.
+- **Consume the plan-first engine from recipes** (STDIO-520). The pure plan-first engine (`executePlanParallel`, `buildExecutionPlan`, `gatePlan`, `layerPlan`, `parseEntrySelection`, and the `NodeRun`/`PlanExecDeps`/`PlanExecResult`/`GateVerdict`/`RecordedCall` types) now lives in `@verevoir/recipes/engine` (0.14.0) as a shared primitive alongside `buildPlanGraph`; the mcp imports it instead of the local `coordinator-cost/plan-executor`. The mcp keeps the LLM-specific `selectEntryTypes`/`enactNode`/coordinator harness. Recipes dep bumped to `^0.14.0`.
+
 ## 0.74.0 — 2026-07-01
 
 > Supersedes npm 0.73.0, a premature partial publish (only the plan-first scaffolding + kink-1 had landed at publish time; the convergence fixes below came after). 0.74.0 is the complete set.

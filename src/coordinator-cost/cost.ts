@@ -21,29 +21,12 @@ import {
   type ModelClass,
 } from '@verevoir/llm';
 
-/** One real tool call the executor ran, with what it cost. `model` is the
- * concrete id that actually ran (the coordinator's own id, or the worker/tier a
- * delegate/enact resolved to); `'(none)'` when the call ran no model (a
- * read/write handled inline). */
-export interface RecordedCall {
-  /** The tool the coordinator called (`enact_capability`, `delegate`, …). */
-  tool: string;
-  /** The concrete model id that ran the work, or `'(none)'` for an inline call. */
-  model: string;
-  /** FRESH input tokens only — cache read/write are kept separate below so the
-   * cost is priced at their real (cheaper) rates. */
-  tokensIn: number;
-  tokensOut: number;
-  /** Cache-read / cache-write input tokens, SEPARATE from `tokensIn`. A
-   * coordinator re-sends its whole context each loop turn, so most of its
-   * "input" is cache-read; folding it into `tokensIn` and pricing it as fresh
-   * input massively overstates the coordinator-seat cost (opus: 3.3M priced at
-   * full input = $51, vs the real ~$10-15 with cache priced correctly). */
-  cacheRead?: number;
-  cacheWrite?: number;
-  /** Wall-clock for the call, ms. */
-  ms: number;
-}
+// The RecordedCall shape is the plan executor's opaque cost-accounting unit, so
+// it lives with the (now pure, shared) executor in @verevoir/recipes/engine and
+// is re-exported here — one definition, and the measurement harness that prices
+// it keeps importing it from `./cost.js` unchanged.
+export type { RecordedCall } from '@verevoir/recipes/engine';
+import type { RecordedCall } from '@verevoir/recipes/engine';
 
 /** The role a model played in the run, so the breakdown reads as tiers rather
  * than a flat model list. The coordinator is the driving model; a delegate/enact
