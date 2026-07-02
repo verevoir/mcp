@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.75.0 — 2026-07-02
+
+- **Converge the gated verify loop** (STDIO-521). The re-produce now asks the worker for a JSON array of `{find,replace}` **edits** against its own previous output (`applyEdits` applies them deterministically), not a fresh artefact — a patch can't regress what it doesn't name, so structure converges monotonically where a rewrite-per-round loop oscillated forever. And a gated capability's reasoning review is narrowed to material **fidelity** (`GATED_REVIEW_RUBRIC`) — the deterministic gate already owns structure/validity, so the review stops re-litigating structure/naming/completeness and blocks only on real value errors (cut a full DTCG set's blocking findings ~12→6, the residual all genuinely material). Gated verify cap raised to 6 (`verifyAttempts`) — the gate's precise findings earn the rounds. `applyEdits` unit-tested incl. the preservation guarantee.
+
 ## 0.74.0 — 2026-07-01
 
 > Supersedes npm 0.73.0, a premature partial publish (only the plan-first scaffolding + kink-1 had landed at publish time; the convergence fixes below came after). 0.74.0 is the complete set.
